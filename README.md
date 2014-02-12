@@ -1,4 +1,5 @@
-vlc-ports-ios
+VLC Client for iOS
 =============
 
-git://git.videolan.org/vlc-ports/ios.git
+_Reference:_
+* https://wiki.videolan.org/iOSCompile
