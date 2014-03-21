@@ -33,10 +33,10 @@
     VLCGoogleDriveTableViewController *_googleDriveTableViewController;
     VLCDownloadViewController *_downloadViewController;
     int _idleCounter;
+    int _networkActivityCounter;
     VLCMovieViewController *_movieViewController;
+    BOOL _passcodeValidated;
 }
-
-@property (nonatomic) BOOL passcodeValidated;
 
 @end
 
@@ -53,7 +53,7 @@
     else
         skipLoopFilterDefaultValue = kVLCSettingSkipLoopFilterNonRef;
 
-    NSDictionary *appDefaults = @{kVLCSettingPasscodeKey : @"", kVLCSettingPasscodeOnKey : @(NO), kVLCSettingContinueAudioInBackgroundKey : @(YES), kVLCSettingStretchAudio : @(NO), kVLCSettingTextEncoding : kVLCSettingTextEncodingDefaultValue, kVLCSettingSkipLoopFilter : skipLoopFilterDefaultValue, kVLCSettingSubtitlesFont : kVLCSettingSubtitlesFontDefaultValue, kVLCSettingSubtitlesFontColor : kVLCSettingSubtitlesFontColorDefaultValue, kVLCSettingSubtitlesFontSize : kVLCSettingSubtitlesFontSizeDefaultValue, kVLCSettingDeinterlace : kVLCSettingDeinterlaceDefaultValue};
+    NSDictionary *appDefaults = @{kVLCSettingPasscodeKey : @"", kVLCSettingPasscodeOnKey : @(NO), kVLCSettingContinueAudioInBackgroundKey : @(YES), kVLCSettingStretchAudio : @(NO), kVLCSettingTextEncoding : kVLCSettingTextEncodingDefaultValue, kVLCSettingSkipLoopFilter : skipLoopFilterDefaultValue, kVLCSettingSubtitlesFont : kVLCSettingSubtitlesFontDefaultValue, kVLCSettingSubtitlesFontColor : kVLCSettingSubtitlesFontColorDefaultValue, kVLCSettingSubtitlesFontSize : kVLCSettingSubtitlesFontSizeDefaultValue, kVLCSettingSubtitlesBoldFont: kVLCSettingSubtitlesBoldFontDefaulValue, kVLCSettingDeinterlace : kVLCSettingDeinterlaceDefaultValue, kVLCSettingNetworkCaching : kVLCSettingNetworkCachingDefaultValue, kVLCSettingPlaybackGestures : [NSNumber numberWithBool:YES]};
 
     [defaults registerDefaults:appDefaults];
 }
@@ -64,14 +64,10 @@
     [quincyManager setSubmissionURL:@"http://crash.videolan.org/crash_v200.php"];
     [quincyManager setDelegate:self];
     [quincyManager setShowAlwaysButton:YES];
-    [quincyManager setFeedbackActivated:YES];
+    [quincyManager startManager];
 
     /* clean caches on launch (since those are used for wifi upload only) */
-    NSArray *searchPaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-    NSString* uploadDirPath = [searchPaths[0] stringByAppendingPathComponent:@"Upload"];
-    NSFileManager *fileManager = [NSFileManager defaultManager];
-    if ([fileManager fileExistsAtPath:uploadDirPath])
-        [fileManager removeItemAtPath:uploadDirPath error:nil];
+    [self cleanCache];
 
     // Init the HTTP Server
     self.uploadController = [[VLCHTTPUploaderController alloc] init];
@@ -153,26 +149,24 @@
 - (void)applicationWillEnterForeground:(UIApplication *)application
 {
     [[MLMediaLibrary sharedMediaLibrary] applicationWillStart];
-    [self validatePasscode];
 }
 
 - (void)applicationWillResignActive:(UIApplication *)application
 {
-    self.passcodeValidated = NO;
+    _passcodeValidated = NO;
     [self validatePasscode];
     [[MLMediaLibrary sharedMediaLibrary] applicationWillExit];
 }
 
 - (void)applicationDidBecomeActive:(UIApplication *)application
 {
-    [self validatePasscode];
     [[MLMediaLibrary sharedMediaLibrary] updateMediaDatabase];
     [self updateMediaList];
 }
 
 - (void)applicationWillTerminate:(UIApplication *)application
 {
-    self.passcodeValidated = NO;
+    _passcodeValidated = NO;
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
@@ -209,7 +203,8 @@
 
 #pragma mark - media discovering
 
-- (void)mediaFileAdded:(NSString *)fileName loading:(BOOL)isLoading {
+- (void)mediaFileAdded:(NSString *)fileName loading:(BOOL)isLoading
+{
     if (!isLoading) {
         MLMediaLibrary *sharedLibrary = [MLMediaLibrary sharedMediaLibrary];
         [sharedLibrary addFilePaths:@[fileName]];
@@ -224,9 +219,22 @@
     }
 }
 
-- (void)mediaFileDeleted:(NSString *)name {
+- (void)mediaFileDeleted:(NSString *)name
+{
     [[MLMediaLibrary sharedMediaLibrary] updateMediaDatabase];
     [_playlistViewController updateViewContents];
+}
+
+- (void)cleanCache
+{
+    if ([self haveNetworkActivity])
+        return;
+
+    NSArray *searchPaths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+    NSString* uploadDirPath = [searchPaths[0] stringByAppendingPathComponent:@"Upload"];
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    if ([fileManager fileExistsAtPath:uploadDirPath])
+        [fileManager removeItemAtPath:uploadDirPath error:nil];
 }
 
 #pragma mark - media list methods
@@ -270,27 +278,32 @@
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSString *passcode = [defaults objectForKey:kVLCSettingPasscodeKey];
     if ([passcode isEqualToString:@""] || ![[defaults objectForKey:kVLCSettingPasscodeOnKey] boolValue]) {
-        self.passcodeValidated = YES;
+        _passcodeValidated = YES;
         return;
     }
 
-    if (!self.passcodeValidated) {
+    if (!_passcodeValidated) {
         _passcodeLockController = [[PAPasscodeViewController alloc] initForAction:PasscodeActionEnter];
         _passcodeLockController.delegate = self;
         _passcodeLockController.passcode = passcode;
-        self.window.rootViewController = _passcodeLockController;
+
+        if (self.window.rootViewController.presentedViewController)
+            [self.window.rootViewController dismissViewControllerAnimated:NO completion:nil];
+
+        UINavigationController *navCon = [[UINavigationController alloc] initWithRootViewController:_passcodeLockController];
+        navCon.modalPresentationStyle = UIModalPresentationFullScreen;
+        [self.window.rootViewController presentViewController:navCon animated:NO completion:nil];
     }
 }
 
 - (void)PAPasscodeViewControllerDidEnterPasscode:(PAPasscodeViewController *)controller
 {
-    // TODO add transition animation, i.e. fade
-    self.window.rootViewController = self.revealController;
+    [self.window.rootViewController dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)PAPasscodeViewController:(PAPasscodeViewController *)controller didFailToEnterPasscode:(NSInteger)attempts
 {
-    // TODO handle error attempts
+    // FIXME: handle countless failed passcode attempts
 }
 
 #pragma mark - idle timer preventer
@@ -308,6 +321,25 @@
         [UIApplication sharedApplication].idleTimerDisabled = NO;
 }
 
+- (void)networkActivityStarted
+{
+    _networkActivityCounter++;
+    if ([UIApplication sharedApplication].networkActivityIndicatorVisible == NO)
+        [UIApplication sharedApplication].networkActivityIndicatorVisible = YES;
+}
+
+- (BOOL)haveNetworkActivity
+{
+    return _networkActivityCounter >= 1;
+}
+
+- (void)networkActivityStopped
+{
+    _networkActivityCounter--;
+    if (_networkActivityCounter < 1)
+        [UIApplication sharedApplication].networkActivityIndicatorVisible = NO;
+}
+
 #pragma mark - playback view handling
 
 - (void)openMediaFromManagedObject:(NSManagedObject *)mediaObject
@@ -321,6 +353,7 @@
         _movieViewController.mediaItem = [(MLAlbumTrack*)mediaObject files].anyObject;
     else if ([mediaObject isKindOfClass:[MLShowEpisode class]])
         _movieViewController.mediaItem = [(MLShowEpisode*)mediaObject files].anyObject;
+    [(MLFile *)_movieViewController.mediaItem setUnread:@(NO)];
 
     UINavigationController *navCon = [[UINavigationController alloc] initWithRootViewController:_movieViewController];
     navCon.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -351,6 +384,5 @@
     navCon.modalPresentationStyle = UIModalPresentationFullScreen;
     [self.window.rootViewController presentViewController:navCon animated:YES completion:nil];
 }
-
 
 @end

@@ -13,9 +13,11 @@
 
 #import "VLCThumbnailsCache.h"
 #import <CommonCrypto/CommonDigest.h>
+#import "UIImage+Blur.h"
 
 static NSInteger MaxCacheSize;
 static NSCache *_thumbnailCache;
+static NSCache *_thumbnailCacheMetadata;
 
 @implementation VLCThumbnailsCache
 
@@ -28,7 +30,9 @@ static NSCache *_thumbnailCache;
                                 MAX_CACHE_SIZE_IPAD: MAX_CACHE_SIZE_IPHONE;
 
     _thumbnailCache = [[NSCache alloc] init];
+    _thumbnailCacheMetadata = [[NSCache alloc] init];
     [_thumbnailCache setCountLimit: MaxCacheSize];
+    [_thumbnailCacheMetadata setCountLimit: MaxCacheSize];
 }
 
 + (NSString *)_md5FromString:(NSString *)string
@@ -100,6 +104,118 @@ static NSCache *_thumbnailCache;
         [_thumbnailCache setObject:displayedImage forKey:objID];
 
     return displayedImage;
+}
+
++ (UIImage *)thumbnailForShow:(MLShow *)mediaShow
+{
+    NSManagedObjectID *objID = mediaShow.objectID;
+    UIImage *displayedImage;
+    BOOL forceRefresh = NO;
+
+    NSUInteger count = [mediaShow.episodes count];
+    NSNumber *previousCount = [_thumbnailCacheMetadata objectForKey:objID];
+
+    if (previousCount.unsignedIntegerValue != count)
+        forceRefresh = YES;
+
+    if (!forceRefresh) {
+        displayedImage = [_thumbnailCache objectForKey:objID];
+        if (displayedImage)
+            return displayedImage;
+    }
+
+    NSUInteger fileNumber = count > 3 ? 3 : count;
+    NSArray *episodes = [mediaShow.episodes allObjects];
+    NSMutableArray *files = [[NSMutableArray alloc] init];
+    for (NSUInteger x = 0; x < count; x++)
+        [files addObject:[episodes[x] files].anyObject];
+
+    displayedImage = [self clusterThumbFromFiles:files andNumber:fileNumber blur:NO];
+    if (displayedImage) {
+        [_thumbnailCache setObject:displayedImage forKey:objID];
+        [_thumbnailCacheMetadata setObject:@(count) forKey:objID];
+    }
+
+    return displayedImage;
+}
+
++ (UIImage *)thumbnailForLabel:(MLLabel *)mediaLabel
+{
+    NSManagedObjectID *objID = mediaLabel.objectID;
+    UIImage *displayedImage;
+    BOOL forceRefresh = NO;
+
+    NSUInteger count = [mediaLabel.files count];
+    NSNumber *previousCount = [_thumbnailCacheMetadata objectForKey:objID];
+
+    if (previousCount.unsignedIntegerValue != count)
+        forceRefresh = YES;
+
+    if (!forceRefresh) {
+        displayedImage = [_thumbnailCache objectForKey:objID];
+        if (displayedImage)
+            return displayedImage;
+    }
+
+    NSUInteger fileNumber = count > 3 ? 3 : count;
+    NSArray *files = [mediaLabel.files allObjects];
+    BOOL blur = NO;
+    if (SYSTEM_RUNS_IOS7_OR_LATER)
+        blur = YES;
+    displayedImage = [self clusterThumbFromFiles:files andNumber:fileNumber blur:blur];
+    if (displayedImage) {
+        [_thumbnailCache setObject:displayedImage forKey:objID];
+        [_thumbnailCacheMetadata setObject:@(count) forKey:objID];
+    }
+
+    return displayedImage;
+}
+
++ (UIImage *)clusterThumbFromFiles:(NSArray *)files andNumber:(NSUInteger)fileNumber blur:(BOOL)blurImage
+{
+    UIImage *clusterThumb;
+    CGSize imageSize;
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        if ([UIScreen mainScreen].scale==2.0)
+            imageSize = CGSizeMake(682., 384.);
+        else
+            imageSize = CGSizeMake(341., 192.);
+    } else {
+        if (SYSTEM_RUNS_IOS7_OR_LATER)
+            imageSize = CGSizeMake(480., 270.);
+        else {
+            if ([UIScreen mainScreen].scale==2.0)
+                imageSize = CGSizeMake(258., 145.);
+            else
+                imageSize = CGSizeMake(129., 73.);
+        }
+    }
+
+    UIGraphicsBeginImageContext(imageSize);
+    for (NSUInteger i = 0; i < fileNumber; i++) {
+        MLFile *file =  [files objectAtIndex:i];
+        clusterThumb = [VLCThumbnailsCache thumbnailForMediaFile:file];
+        CGContextRef context = UIGraphicsGetCurrentContext();
+        CGFloat imagePartWidth = (imageSize.width / fileNumber);
+        //the rect in which the image should be drawn
+        CGRect clippingRect = CGRectMake(imagePartWidth * i, 0, imagePartWidth, imageSize.height);
+        CGContextSaveGState(context);
+        CGContextClipToRect(context, clippingRect);
+        //take the center of the clippingRect and calculate the offset from the original center
+        CGFloat centerOffset = (imagePartWidth * i + imagePartWidth / 2) - imageSize.width / 2;
+        //shift the rect to draw the middle of the image in the clippingrect
+        CGRect drawingRect = CGRectMake(centerOffset, 0, imageSize.width, imageSize.height);
+        [clusterThumb drawInRect:drawingRect];
+        //get rid of the old clippingRect
+        CGContextRestoreGState(context);
+    }
+    clusterThumb = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+
+    if (!blurImage)
+        return clusterThumb;
+
+    return [UIImage applyBlurOnImage:clusterThumb withRadius:0.1];
 }
 
 @end

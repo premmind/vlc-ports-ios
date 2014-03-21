@@ -1,3 +1,40 @@
+2.3:
+----
+* New ability to organize media in folders (#9043)
+* Support for password protected HTTP streams (#9028)
+* WiFi uploads and HTTP downloads continue in the background
+  (2 min on iOS 7, 10 min on iOS 6)
+* Added option to disable playback control gestures (#10592)
+* Added option to use bold subtitles (#10882)
+* Modified behavior: when passcode lock is enabled, playback will be stopped
+  when VLC enters the background state (#10630, #10747)
+* Fixed serial ftp downloads
+* Fixed downloads from Twonky UPnP servers (#10631)
+* Added support for m4b, caf, oma, w64 audio files
+* Stability improvements and UX tweaks (amongst others #10601, #10518)
+* New translation to Latvian
+
+2.2.2:
+------
+* Fixed audio playback regression introduced in previous update (#10597)
+* Updated translations to Arabic, Chinese (Hans), Dutch, Galician, Hungarian,
+  Portuguese
+
+2.2.1:
+------
+* Added initial support for ARM64 aka AArch64 aka ARMv8
+* Improved reliability for Dropbox streaming (#10489)
+* Added option to adapt network caching (#10388)
+* Compatibility fixes for multiple UPnP servers (notably Twonky 7, Serviio 1.4,
+  XBMC 12)
+* Fixed an issue where always the same file in a UPnP folder was played (#10441)
+* Fixed a ftp streaming issue from connected servers if file name contains
+  non-ASCII characters or the path contains spaces (#10469)
+* Improved meta data readability within the iPad library view (#10471)
+* Improved stability on iOS 6
+* Improved Thumbnails
+* Misc stability improvements (#10490)
+
 2.2.0:
 ------
 NB: This release removes support for iOS 5 and therefore the first generation

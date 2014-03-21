@@ -8,6 +8,7 @@
  * Authors: Felix Paul Kühne <fkuehne # videolan.org>
  *          Gleb Pinigin <gpinigin # gmail.com>
  *          Tamas Timar <ttimar.vlc # gmail.com>
+ *          Carola Nitz <nitz.carola # gmail.com>
  *
  * Refer to the COPYING file of the official project for license.
  *****************************************************************************/
@@ -22,6 +23,9 @@
 #import "VLCAppDelegate.h"
 #import "UIBarButtonItem+Theme.h"
 #import "VLCFirstStepsViewController.h"
+#import "VLCFolderCollectionViewFlowLayout.h"
+#import "LXReorderableCollectionViewFlowLayout.h"
+#import "VLCAlertView.h"
 
 /* prefs keys */
 static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutorial?";
@@ -39,10 +43,17 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 
 @end
 
-@interface VLCPlaylistViewController () <UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UITableViewDataSource, UITableViewDelegate, MLMediaLibrary> {
+@interface VLCPlaylistViewController () <VLCFolderCollectionViewDelegateFlowLayout, LXReorderableCollectionViewDataSource, LXReorderableCollectionViewDelegateFlowLayout, UITableViewDataSource, UITableViewDelegate, MLMediaLibrary> {
     NSMutableArray *_foundMedia;
     VLCLibraryMode _libraryMode;
+    VLCLibraryMode _previousLibraryMode;
     UIBarButtonItem *_menuButton;
+    NSMutableArray *_indexPaths;
+    id _folderObject;
+    VLCFolderCollectionViewFlowLayout *_folderLayout;
+    LXReorderableCollectionViewFlowLayout *_reorderLayout;
+    BOOL inFolder;
+    UILongPressGestureRecognizer *_longPressGestureRecognizer;
 }
 
 @property (nonatomic, strong) UITableView *tableView;
@@ -59,7 +70,8 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
     [defaults registerDefaults:@{kDisplayedFirstSteps : [NSNumber numberWithBool:NO]}];
 }
 
-- (void)loadView {
+- (void)loadView
+{
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
         _tableView = [[UITableView alloc] initWithFrame:[UIScreen mainScreen].bounds style:UITableViewStylePlain];
         _tableView.backgroundColor = [UIColor colorWithWhite:.122 alpha:1.];
@@ -69,15 +81,9 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
         _tableView.dataSource = self;
         _tableView.opaque = YES;
         self.view = _tableView;
-
-        if (SYSTEM_RUNS_IOS7_OR_LATER) {
-            UILongPressGestureRecognizer *gestureRecognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(tableViewLongTouchGestureAction:)];
-            [self.view addGestureRecognizer:gestureRecognizer];
-        }
     } else {
-        UICollectionViewFlowLayout *flowLayout = [[UICollectionViewFlowLayout alloc] init];
-
-        _collectionView = [[UICollectionView alloc] initWithFrame:[UIScreen mainScreen].bounds collectionViewLayout:flowLayout];
+        _folderLayout = [[VLCFolderCollectionViewFlowLayout alloc] init];
+        _collectionView = [[UICollectionView alloc] initWithFrame:[UIScreen mainScreen].bounds collectionViewLayout:_folderLayout];
         _collectionView.alwaysBounceVertical = YES;
         _collectionView.indicatorStyle = UIScrollViewIndicatorStyleWhite;
         _collectionView.delegate = self;
@@ -85,7 +91,8 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
         _collectionView.opaque = YES;
         _collectionView.backgroundColor = [UIColor colorWithWhite:.122 alpha:1.];
         self.view = _collectionView;
-
+        _longPressGestureRecognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(_collectionViewHandleLongPressGesture:)];
+        [_collectionView addGestureRecognizer:_longPressGestureRecognizer];
         if (SYSTEM_RUNS_IOS7_OR_LATER)
             [_collectionView registerNib:[UINib nibWithNibName:@"VLCFuturePlaylistCollectionViewCell" bundle:nil] forCellWithReuseIdentifier:@"PlaylistCell"];
         else
@@ -123,8 +130,8 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
     _emptyLibraryView.emptyLibraryLongDescriptionLabel.text = NSLocalizedString(@"EMPTY_LIBRARY_LONG", @"");
     [_emptyLibraryView.emptyLibraryLongDescriptionLabel sizeToFit];
     [_emptyLibraryView.learnMoreButton setTitle:NSLocalizedString(@"BUTTON_LEARN_MORE", @"") forState:UIControlStateNormal];
-
-    [self setToolbarItems:@[[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil], [UIBarButtonItem themedDarkToolbarButtonWithTitle:NSLocalizedString(@"BUTTON_RENAME", @"") target:self andSelector:@selector(renameSelection)], [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil], [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemTrash target:self action:@selector(deleteSelection)]]];
+    UIBarButtonItem *createFolderItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemOrganize target:self action:@selector(createFolder)];
+    [self setToolbarItems:@[createFolderItem, [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil], [UIBarButtonItem themedDarkToolbarButtonWithTitle:NSLocalizedString(@"BUTTON_RENAME", @"") target:self andSelector:@selector(renameSelection)], [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil], [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemTrash target:self action:@selector(deleteSelection)]]];
     self.navigationController.toolbar.barStyle = UIBarStyleBlack;
 
     if (SYSTEM_RUNS_IOS7_OR_LATER) {
@@ -209,6 +216,32 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
             [self.navigationItem.leftBarButtonItem setTitle:NSLocalizedString(@"LIBRARY_SERIES", @"")];
         self.title = [(MLShow*)mediaObject name];
         [self reloadViews];
+    } else if ([mediaObject isKindOfClass:[MLLabel class]]) {
+        MLLabel *folder = (MLLabel*) mediaObject;
+        inFolder = YES;
+        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+            if (![self.collectionView.collectionViewLayout isEqual:_reorderLayout]) {
+                for (UIGestureRecognizer *recognizer in self.view.gestureRecognizers) {
+                    if (recognizer == _folderLayout.panGestureRecognizer || recognizer == _folderLayout.longPressGestureRecognizer || recognizer == _longPressGestureRecognizer)
+                        [self.collectionView removeGestureRecognizer:recognizer];
+                }
+                _reorderLayout = [[LXReorderableCollectionViewFlowLayout alloc] init];
+                [self.collectionView setCollectionViewLayout:_reorderLayout animated:NO];
+                _folderLayout = nil;
+            }
+        }
+        _foundMedia = [NSMutableArray arrayWithArray:[folder sortedFolderItems]];
+        self.navigationItem.leftBarButtonItem = [UIBarButtonItem themedBackButtonWithTarget:self andSelector:@selector(backToAllItems:)];
+        self.navigationItem.leftBarButtonItem.title = NSLocalizedString(@"BUTTON_BACK", @"");
+        self.title = [folder name];
+
+        UIBarButtonItem *removeFromFolder = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemReply target:self action:@selector(removeFromFolder)];
+        NSMutableArray *toolbarItems = [self.toolbarItems mutableCopy];
+        toolbarItems[0] = removeFromFolder;
+        self.toolbarItems = toolbarItems;
+
+        [self reloadViews];
+        return;
     } else
         [(VLCAppDelegate*)[UIApplication sharedApplication].delegate openMediaFromManagedObject:mediaObject];
 }
@@ -251,7 +284,15 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 
         for (MLFile *file in iterFiles)
             [self _deleteMediaObject:file];
-    } else
+    } else if ([managedObject isKindOfClass:[MLLabel class]]) {
+        MLLabel *folder = managedObject;
+        NSSet *iterFiles = [NSSet setWithSet:folder.files];
+        [folder removeFiles:folder.files];
+        for (MLFile *file in iterFiles)
+            [self _deleteMediaObject:file];
+        [[MLMediaLibrary sharedMediaLibrary] removeObject:folder];
+    }
+    else
         [self _deleteMediaObject:managedObject];
 
     if (updateDB) {
@@ -262,6 +303,9 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 
 - (void)_deleteMediaObject:(MLFile *)mediaObject
 {
+    if (inFolder)
+        [self rearrangeFolderTrackNumbersForRemovedItem:mediaObject];
+
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSString *folderLocation = [[[NSURL URLWithString:mediaObject.url] path] stringByDeletingLastPathComponent];
     NSArray *allfiles = [fileManager contentsOfDirectoryAtPath:folderLocation error:nil];
@@ -287,6 +331,9 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
         [self.emptyLibraryView removeFromSuperview];
 
     if (_foundMedia.count == 0) {
+        self.emptyLibraryView.emptyLibraryLabel.text = inFolder ? NSLocalizedString(@"FOLDER_EMPTY", @"") : NSLocalizedString(@"EMPTY_LIBRARY", @"");
+        self.emptyLibraryView.emptyLibraryLongDescriptionLabel.text = inFolder ? NSLocalizedString(@"FOLDER_EMPTY_LONG", @"") : NSLocalizedString(@"EMPTY_LIBRARY_LONG", @"");
+        self.emptyLibraryView.learnMoreButton.hidden = inFolder;
         self.emptyLibraryView.frame = self.view.bounds;
         [self.view addSubview:self.emptyLibraryView];
         self.navigationItem.rightBarButtonItem = nil;
@@ -353,14 +400,30 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
         return;
     }
 
+    /* add all folders*/
+    NSArray *allFolders = [MLLabel allLabels];
+    for (MLLabel *folder in allFolders)
+        [_foundMedia addObject:folder];
+
     /* add all remaining files */
     NSArray *allFiles = [MLFile allFiles];
     for (MLFile *file in allFiles) {
+        if (file.labels.count > 0) continue;
+
         if (!file.isShowEpisode && !file.isAlbumTrack)
             [_foundMedia addObject:file];
         else if (file.isShowEpisode) {
             if (file.showEpisode.show.episodes.count < 2)
                 [_foundMedia addObject:file];
+
+            /* older MediaLibraryKit versions don't send a show name in a popular
+             * corner case. hence, we need to work-around here and force a reload
+             * afterwards as this could lead to the 'all my shows are gone' 
+             * syndrome (see #10435, #10464, #10432 et al) */
+            if (file.showEpisode.show.name.length == 0) {
+                file.showEpisode.show.name = NSLocalizedString(@"UNTITLED_SHOW", @"");
+                [self performSelector:@selector(updateViewContents) withObject:nil afterDelay:0.1];
+            }
         } else if (file.isAlbumTrack) {
             if (file.albumTrack.album.tracks.count < 2)
                 [_foundMedia addObject:file];
@@ -411,6 +474,21 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
     return cell;
 }
 
+- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)fromIndexPath toIndexPath:(NSIndexPath *)toIndexPath
+{
+    MLFile* object = [_foundMedia objectAtIndex:fromIndexPath.item];
+    [_foundMedia removeObjectAtIndex:fromIndexPath.item];
+    [_foundMedia insertObject:object atIndex:toIndexPath.item];
+    object.folderTrackNumber = @(toIndexPath.item - 1);
+    object = [_foundMedia objectAtIndex:fromIndexPath.item];
+    object.folderTrackNumber = @(fromIndexPath.item - 1);
+}
+
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    return inFolder;
+}
+
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath
 {
     cell.backgroundColor = (indexPath.row % 2 == 0)? [UIColor blackColor]: [UIColor colorWithWhite:.122 alpha:1.];
@@ -430,8 +508,15 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    if (tableView.isEditing)
+    if (tableView.isEditing) {
+        if (_libraryMode == VLCLibraryModeCreateFolder) {
+            _folderObject = _foundMedia[indexPath.row];
+            _libraryMode = _previousLibraryMode;
+            [self updateViewContents];
+            [self createFolderWithName:nil];
+        }
         return;
+    }
 
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSManagedObject *selectedObject = _foundMedia[indexPath.row];
@@ -450,35 +535,24 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
             [list addMedia:media];
         }
         [(VLCAppDelegate*)[UIApplication sharedApplication].delegate openMediaList:list atIndex:(int)[tracks indexOfObject:selectedObject]];
+    } else if ([selectedObject isKindOfClass:[MLFile class]] && [((MLFile *)selectedObject).labels count] > 0) {
+        VLCMediaList *list;
+        MLLabel *folder = [((MLFile *)selectedObject).labels anyObject];
+        NSArray *folderTracks = [folder sortedFolderItems];
+        NSUInteger count = folderTracks.count;
+        list = [[VLCMediaList alloc] init];
+
+        MLFile *file;
+        for (NSInteger x = count - 1; x > -1; x--) {
+            file = (MLFile *)folderTracks[x];
+            [list addMedia:[VLCMedia mediaWithURL:[NSURL URLWithString:file.url]]];
+        }
+        [(VLCAppDelegate *)[UIApplication sharedApplication].delegate openMediaList:list atIndex:(int)[folderTracks indexOfObject:selectedObject]];
     } else
         [self openMediaObject:selectedObject];
 }
 
 #pragma mark - table view gestures
-- (void)tableViewLongTouchGestureAction:(UIGestureRecognizer *)recognizer
-{
-    NSIndexPath *path = [(UITableView *)self.view indexPathForRowAtPoint:[recognizer locationInView:self.view]];
-    UITableViewCell *cell = [(UITableView *)self.view cellForRowAtIndexPath:path];
-
-    CGRect frame = cell.frame;
-    if (frame.size.height > 90.)
-        frame.size.height = 90.;
-    else if (recognizer.state == UIGestureRecognizerStateBegan)
-        frame.size.height = 180;
-
-    void (^animationBlock)() = ^() {
-        cell.frame = frame;
-    };
-
-    void (^completionBlock)(BOOL finished) = ^(BOOL finished) {
-        cell.frame = frame;
-        [self.tableView scrollToRowAtIndexPath:path atScrollPosition:UITableViewScrollPositionNone animated:YES];
-    };
-
-    NSTimeInterval animationDuration = .2;
-    [UIView animateWithDuration:animationDuration animations:animationBlock completion:completionBlock];
- }
-
 - (void)swipeRightGestureAction:(UIGestureRecognizer *)recognizer
 {
     if ([[self.editButtonItem title] isEqualToString:NSLocalizedString(@"BUTTON_CANCEL",@"")])
@@ -546,6 +620,11 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath
 {
     if (self.editing) {
+        if (_libraryMode == VLCLibraryModeCreateFolder) {
+            _folderObject = _foundMedia[indexPath.item];
+            _libraryMode = _previousLibraryMode;
+            [self createFolderWithName:nil];
+        }
         [(VLCPlaylistCollectionViewCell *)[collectionView cellForItemAtIndexPath:indexPath] selectionUpdate];
         return;
     }
@@ -563,6 +642,19 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
             [list addMedia:[VLCMedia mediaWithURL: [NSURL URLWithString:file.url]]];
         }
         [(VLCAppDelegate*)[UIApplication sharedApplication].delegate openMediaList:list atIndex:(int)[tracks indexOfObject:selectedObject]];
+    } else if ([selectedObject isKindOfClass:[MLFile class]] && [((MLFile *)selectedObject).labels count] > 0) {
+        VLCMediaList *list;
+        MLLabel *folder = [((MLFile *)selectedObject).labels anyObject];
+        NSArray *folderTracks = [folder sortedFolderItems];
+        NSUInteger count = folderTracks.count;
+        list = [[VLCMediaList alloc] init];
+
+        MLFile *file;
+        for (NSInteger x = count - 1; x > -1; x--) {
+            file = (MLFile *)folderTracks[x];
+            [list addMedia:[VLCMedia mediaWithURL:[NSURL URLWithString:file.url]]];
+        }
+        [(VLCAppDelegate *)[UIApplication sharedApplication].delegate openMediaList:list atIndex:(int)[folderTracks indexOfObject:selectedObject]];
     } else
         [self openMediaObject:selectedObject];
 }
@@ -570,6 +662,240 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 - (void)collectionView:(UICollectionView *)collectionView didDeselectItemAtIndexPath:(NSIndexPath *)indexPath
 {
     [(VLCPlaylistCollectionViewCell *)[collectionView cellForItemAtIndexPath:indexPath] selectionUpdate];
+}
+
+- (void)collectionView:(UICollectionView *)collectionView removeItemFromFolderAtIndexPathIfNeeded:(NSIndexPath *)indexPath
+{
+    MLFile *mediaObject = (MLFile *)_foundMedia[indexPath.item];
+    [self rearrangeFolderTrackNumbersForRemovedItem:mediaObject];
+    mediaObject.labels = nil;
+    mediaObject.folderTrackNumber = nil;
+
+    [self backToAllItems:nil];
+}
+
+- (void)collectionView:(UICollectionView *)collectionView itemAtIndexPath:(NSIndexPath *)fromIndexPath willMoveToIndexPath:(NSIndexPath *)toIndexPath
+{
+    MLFile* object = [_foundMedia objectAtIndex:fromIndexPath.item];
+    [_foundMedia removeObjectAtIndex:fromIndexPath.item];
+    [_foundMedia insertObject:object atIndex:toIndexPath.item];
+    object.folderTrackNumber = @(toIndexPath.item - 1);
+    object = [_foundMedia objectAtIndex:fromIndexPath.item];
+    object.folderTrackNumber = @(fromIndexPath.item - 1);
+}
+
+- (void)collectionView:(UICollectionView *)collectionView requestToMoveItemAtIndexPath:(NSIndexPath *)itemPath intoFolderAtIndexPath:(NSIndexPath *)folderPath
+{
+    BOOL validFileTypeAtFolderPath = ([_foundMedia[folderPath.item] isKindOfClass:[MLFile class]] || [_foundMedia[folderPath.item] isKindOfClass:[MLLabel class]]) && [_foundMedia[itemPath.item] isKindOfClass:[MLFile class]];
+
+    if (!validFileTypeAtFolderPath) {
+        VLCAlertView *alert = [[VLCAlertView alloc] initWithTitle:NSLocalizedString(@"FOLDER_INVALID_TYPE_TITLE", @"") message:NSLocalizedString(@"FOLDER_INVALID_TYPE_MESSAGE", @"") cancelButtonTitle:nil otherButtonTitles:@[NSLocalizedString(@"BUTTON_OK", @"")]];
+
+        alert.completion = ^(BOOL cancelled, NSInteger buttonIndex) {
+            [self updateViewContents];
+        };
+        [alert show];
+        return;
+    }
+
+    BOOL isFolder = [_foundMedia[folderPath.item] isKindOfClass:[MLLabel class]];
+
+    if (isFolder){
+        MLLabel *folder = _foundMedia[folderPath.item];
+        MLFile *file = _foundMedia[itemPath.item];
+        [file setLabels:[[NSSet alloc] initWithObjects:folder, nil]];
+        file.folderTrackNumber = @([folder.files count] - 1);
+        [_foundMedia removeObjectAtIndex:itemPath.item];
+        [self updateViewContents];
+    } else {
+        _folderObject = _foundMedia[folderPath.item];
+        _indexPaths = [NSMutableArray arrayWithArray:@[itemPath]];
+        [self showCreateFolderAlert];
+    }
+}
+
+#pragma mark - Folder implementation
+
+- (void)rearrangeFolderTrackNumbersForRemovedItem:(MLFile *) mediaObject
+{
+    MLLabel *label = [mediaObject.labels anyObject];
+    NSSet *allFiles = label.files;
+    for (MLFile *file in allFiles) {
+        if (file.folderTrackNumber > mediaObject.folderTrackNumber) {
+            int value = [file.folderTrackNumber intValue];
+            file.folderTrackNumber = [NSNumber numberWithInt:value - 1];
+        }
+    }
+}
+
+- (void)showCreateFolderAlert
+{
+    VLCAlertView *alert = [[VLCAlertView alloc] initWithTitle:NSLocalizedString(@"FOLDER_CHOOSE_NAME_TITLE", @"") message:NSLocalizedString(@"FOLDER_CHOOSE_NAME_MESSAGE", @"") cancelButtonTitle:NSLocalizedString(@"BUTTON_CANCEL", @"") otherButtonTitles:@[NSLocalizedString(@"BUTTON_SAVE", @"")]];
+    [alert setAlertViewStyle:UIAlertViewStylePlainTextInput];
+    [[alert textFieldAtIndex:0] setText:NSLocalizedString(@"FOLDER_NAME_PLACEHOLDER", @"")];
+    [[alert textFieldAtIndex:0] setClearButtonMode:UITextFieldViewModeAlways];
+
+    __weak VLCAlertView *weakAlert = alert;
+    alert.completion = ^(BOOL cancelled, NSInteger buttonIndex) {
+        if (cancelled)
+            [self updateViewContents];
+        else
+            [self createFolderWithName:[weakAlert textFieldAtIndex:0].text];
+    };
+    [alert show];
+}
+
+- (void)createFolder
+{
+    if (_libraryMode == VLCLibraryModeCreateFolder) {
+        _libraryMode = _previousLibraryMode;
+        [self updateViewContents];
+        [self showCreateFolderAlert];
+        return;
+    }
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
+        _indexPaths = [NSMutableArray arrayWithArray:[self.collectionView indexPathsForSelectedItems]];
+    else
+        _indexPaths = [NSMutableArray arrayWithArray:[self.tableView indexPathsForSelectedRows]];
+
+    for (NSIndexPath *path in _indexPaths) {
+        id mediaObject;
+        if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
+            mediaObject = _foundMedia[path.item];
+        else
+            mediaObject = _foundMedia[path.row];
+        if ([mediaObject isKindOfClass:[MLLabel class]])
+            [_indexPaths removeObject:path];
+    }
+
+    if ([_indexPaths count] != 0) {
+        NSArray *folder = [MLLabel allLabels];
+        //if we already have folders display them
+        if ([folder count] > 0) {
+            _foundMedia = [NSMutableArray arrayWithArray:folder];
+            self.title = NSLocalizedString(@"SELECT_FOLDER", @"");
+            _previousLibraryMode = _libraryMode;
+            _libraryMode = VLCLibraryModeCreateFolder;
+            [self reloadViews];
+            return;
+        }
+    }
+    //no selected items or no existing folder ask for foldername
+    [self showCreateFolderAlert];
+}
+
+- (void)removeFromFolder
+{
+    BOOL isPad = UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad;
+    if (isPad)
+        _indexPaths = [NSMutableArray arrayWithArray:[self.collectionView indexPathsForSelectedItems]];
+    else
+        _indexPaths = [NSMutableArray arrayWithArray:[self.tableView indexPathsForSelectedRows]];
+
+    [_indexPaths sortUsingSelector:@selector(compare:)];
+
+    for (NSInteger i = [_indexPaths count] - 1; i >= 0; i--) {
+        NSIndexPath *path = _indexPaths[i];
+        MLFile *file = (MLFile *)_foundMedia[isPad ? path.item : path.row];
+
+        MLLabel *folder = [file.labels anyObject];
+        [self rearrangeFolderTrackNumbersForRemovedItem:file];
+        file.labels = nil;
+        file.folderTrackNumber = nil;
+        [_foundMedia removeObject:file];
+
+        if ([folder.files count] == 0) {
+            [self removeMediaObject:folder updateDatabase:YES];
+            [self backToAllItems:nil];
+        }
+    }
+    [self reloadViews];
+}
+
+- (void)createFolderWithName:(NSString *)folderName
+{
+    NSArray *labels = [MLLabel allLabels];
+    for (MLLabel *label in labels){
+        if ([label.name isEqualToString:folderName]) {
+            _folderObject = nil;
+            _indexPaths = nil;
+            VLCAlertView *alert = [[VLCAlertView alloc] initWithTitle:NSLocalizedString(@"FOLDER_NAME_DUPLICATE_TITLE", @"") message:NSLocalizedString(@"FOLDER_NAME_DUPLICATE_MESSAGE", @"") cancelButtonTitle:nil otherButtonTitles:@[NSLocalizedString(@"BUTTON_OK", @"")]];
+
+            alert.completion = ^(BOOL cancelled, NSInteger buttonIndex) {
+                [self updateViewContents];
+            };
+            [alert show];
+            return;
+        }
+    }
+
+    if (_folderObject != nil) {
+        NSUInteger folderIndex = [_foundMedia indexOfObject:_folderObject];
+        //item got dragged onto item
+        if ([_foundMedia[folderIndex] isKindOfClass:[MLFile class]]) {
+            MLFile *file = _foundMedia[folderIndex];
+            MLLabel *label = [[MLMediaLibrary sharedMediaLibrary] createObjectForEntity:@"Label"];
+            label.name = folderName;
+
+            file.labels = [NSSet setWithObjects:label,nil];
+            NSNumber *folderTrackNumber = [NSNumber numberWithInt:(int)[label files].count - 1];
+            file.folderTrackNumber = folderTrackNumber;
+
+            [_foundMedia removeObjectAtIndex:folderIndex];
+            [_foundMedia insertObject:label atIndex:folderIndex];
+            MLFile *itemFile = _foundMedia[((NSIndexPath *)_indexPaths[0]).item];
+            itemFile.labels = file.labels;
+            [_foundMedia removeObjectAtIndex:((NSIndexPath *)_indexPaths[0]).item];
+            itemFile.folderTrackNumber = @([label files].count - 1);
+        } else {
+            //item got dragged onto folder or items should be added to folder
+            MLLabel *label = _foundMedia[folderIndex];
+            [_indexPaths sortUsingSelector:@selector(compare:)];
+
+            for (NSInteger i = [_indexPaths count] - 1; i >= 0; i--) {
+                NSIndexPath *path = _indexPaths[i];
+                if (![_foundMedia[path.row] isKindOfClass:[MLFile class]])
+                    continue;
+                MLFile *file = _foundMedia[path.row];
+                file.labels = [NSSet setWithObjects:label, nil];
+                [_foundMedia removeObjectAtIndex:path.row];
+                file.folderTrackNumber = @([label files].count - 1);
+            }
+        }
+        _folderObject = nil;
+    } else {
+        //create new folder
+        MLLabel *label = [[MLMediaLibrary sharedMediaLibrary] createObjectForEntity:@"Label"];
+        label.name = folderName;
+
+        //if items were selected
+        if ([_indexPaths count] != 0) {
+            [_indexPaths sortUsingSelector:@selector(compare:)];
+
+            for (NSInteger i = [_indexPaths count] - 1; i >= 0; i--) {
+                NSIndexPath *path = _indexPaths[i];
+                if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+                    MLFile *file = _foundMedia[path.item];
+                    file.labels = [NSSet setWithObjects:label, nil];
+                    file.folderTrackNumber = @([label files].count - 1);
+                    [_foundMedia removeObjectAtIndex:path.item];
+                } else {
+                    MLFile *file = _foundMedia[path.row];
+                    file.labels = [NSSet setWithObjects:label, nil];
+                    file.folderTrackNumber = @([label files].count - 1);
+                    [_foundMedia removeObjectAtIndex:path.row];
+                }
+            }
+        }
+    }
+    _indexPaths = nil;
+    [self setEditing:NO];
+    [self updateViewContents];
+}
+
+- (void)_collectionViewHandleLongPressGesture:(UIGestureRecognizer *) sender
+{
+    [self setEditing:YES animated:YES];
 }
 
 #pragma mark - UI implementation
@@ -603,17 +929,27 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
         /* UIKit doesn't clear the selection automagically if we leave the editing mode
          * so we need to do so manually */
         if (!editing) {
+            [self.collectionView addGestureRecognizer:_longPressGestureRecognizer];
             NSArray *selectedItems = [self.collectionView indexPathsForSelectedItems];
             NSUInteger count = selectedItems.count;
 
             for (NSUInteger x = 0; x < count; x++)
                 [self.collectionView deselectItemAtIndexPath:selectedItems[x] animated:NO];
-        }
+        } else
+            [self.collectionView removeGestureRecognizer:_longPressGestureRecognizer];
+
     } else {
         self.tableView.allowsMultipleSelectionDuringEditing = editing;
         [self.tableView setEditing:editing animated:YES];
         [self.editButtonItem setTitle:editing ? NSLocalizedString(@"BUTTON_CANCEL",@"") : NSLocalizedString(@"BUTTON_EDIT", @"")];
     }
+
+    if (_libraryMode == VLCLibraryModeCreateFolder) {
+        _libraryMode = _previousLibraryMode;
+        _indexPaths = nil;
+        [self updateViewContents];
+    }
+
     self.navigationController.toolbarHidden = !editing;
 }
 
@@ -632,6 +968,24 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 
 - (IBAction)backToAllItems:(id)sender
 {
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        if (![self.collectionView.collectionViewLayout isEqual:_folderLayout]) {
+            //for some reason the Gesturerecognizer block themselves if not removed manually
+            for (UIGestureRecognizer *recognizer in self.view.gestureRecognizers) {
+                if (recognizer == _reorderLayout.panGestureRecognizer || recognizer == _reorderLayout.longPressGestureRecognizer)
+                    [self.collectionView removeGestureRecognizer:recognizer];
+            }
+            _folderLayout = [[VLCFolderCollectionViewFlowLayout alloc] init];
+            [self.collectionView setCollectionViewLayout:_folderLayout animated:NO];
+            _reorderLayout = nil;
+            [_collectionView addGestureRecognizer:_longPressGestureRecognizer];
+        }
+    }
+    inFolder = NO;
+    UIBarButtonItem *createFolderItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemOrganize target:self action:@selector(createFolder)];
+    NSMutableArray *toolbarItems = [self.toolbarItems mutableCopy];
+    toolbarItems[0] = createFolderItem;
+    self.toolbarItems = toolbarItems;
     [self setLibraryMode:_libraryMode];
     [self updateViewContents];
 }
@@ -684,9 +1038,20 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
         itemName = [(VLCPlaylistCollectionViewCell *)[self.collectionView cellForItemAtIndexPath:indexPaths[0]] titleLabel].text;
     else
         itemName = [(VLCPlaylistTableViewCell *)[self.tableView cellForRowAtIndexPath:indexPaths[0]] titleLabel].text;
-    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:[NSString stringWithFormat:NSLocalizedString(@"RENAME_MEDIA_TO", @""), itemName] message:nil delegate:self cancelButtonTitle:NSLocalizedString(@"BUTTON_CANCEL", @"") otherButtonTitles:NSLocalizedString(@"BUTTON_RENAME", @""), nil];
+
+    VLCAlertView *alert = [[VLCAlertView alloc] initWithTitle:[NSString stringWithFormat:NSLocalizedString(@"RENAME_MEDIA_TO", @""), itemName] message:nil cancelButtonTitle:NSLocalizedString(@"BUTTON_CANCEL", @"") otherButtonTitles:@[NSLocalizedString(@"BUTTON_RENAME", @"")]];
     [alert setAlertViewStyle:UIAlertViewStylePlainTextInput];
     [[alert textFieldAtIndex:0] setText:itemName];
+    [[alert textFieldAtIndex:0] setClearButtonMode:UITextFieldViewModeAlways];
+
+    __weak VLCAlertView *weakAlert = alert;
+    alert.completion = ^(BOOL cancelled, NSInteger buttonIndex) {
+        if (cancelled)
+            [self _endEditingWithHardReset:NO];
+        else
+            [self renameMediaObjectTo:[weakAlert textFieldAtIndex:0].text];
+
+    };
     [alert show];
 }
 
@@ -697,9 +1062,13 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
         indexPaths = [self.collectionView indexPathsForSelectedItems];
     else
         indexPaths = [self.tableView indexPathsForSelectedRows];
+
+    if (indexPaths.count < 1)
+        return;
+
     id mediaObject = _foundMedia[[indexPaths[0] row]];
 
-    if ([mediaObject isKindOfClass:[MLAlbum class]] || [mediaObject isKindOfClass:[MLShowEpisode class]] || [mediaObject isKindOfClass:[MLShow class]])
+    if ([mediaObject isKindOfClass:[MLAlbum class]] || [mediaObject isKindOfClass:[MLShowEpisode class]] || [mediaObject isKindOfClass:[MLShow class]] || [mediaObject isKindOfClass:[MLLabel class]] )
         [mediaObject setName:newName];
     else
         [mediaObject setTitle:newName];
@@ -711,14 +1080,6 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 
     if (indexPaths.count > 1)
         [self renameSelection];
-    else
-        [self _endEditingWithHardReset:NO];
-}
-
-- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex
-{
-    if (buttonIndex == 1)
-        [self renameMediaObjectTo:[alertView textFieldAtIndex:0].text];
     else
         [self _endEditingWithHardReset:NO];
 }
@@ -736,7 +1097,8 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 // RootController is responsible for supporting interface orientation(iOS6.0+), i.e. navigation controller
 // so this will not work as intended without "voodoo magic"(UINavigationController category, subclassing, etc)
 /* introduced in iOS 6 */
-- (NSUInteger)supportedInterfaceOrientations {
+- (NSUInteger)supportedInterfaceOrientations
+{
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
         return UIInterfaceOrientationMaskAll;
 
@@ -745,11 +1107,13 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 }
 
 /* introduced in iOS 6 */
-- (BOOL)shouldAutorotate {
+- (BOOL)shouldAutorotate
+{
     return (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) || (_foundMedia.count > 0);
 }
 
-- (void)willRotateToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
+- (void)willRotateToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration
+{
     [super willRotateToInterfaceOrientation:toInterfaceOrientation duration:duration];
 
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)

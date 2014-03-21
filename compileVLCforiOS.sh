@@ -5,20 +5,23 @@
 set -e
 
 PLATFORM=iphoneos
-SDK=7.0
+SDK=7.1
 SDK_MIN=6.1
 VERBOSE=no
 CONFIGURATION="Release"
 NONETWORK=no
 SKIPLIBVLCCOMPILATION=no
+UNSTABLEVLCKIT=yes
 
-TESTEDVLCKITHASH=d5f317f42
-TESTEDMEDIALIBRARYKITHASH=b4a835ee7
+TESTEDVLCKITHASH=766c3b7fa
+TESTEDUNSTABLEVLCKITHASH=5c8c17632
+TESTEDMEDIALIBRARYKITHASH=ece852f18
+TESTEDQUINCYKITHASH=f1d93b96b
 
 usage()
 {
 cat << EOF
-usage: $0 [-s] [-v] [-k sdk]
+usage: $0 [-s] [-v] [-k sdk] [-d] [-n] [-l] [-u]
 
 OPTIONS
    -k       Specify which sdk to use (see 'xcodebuild -showsdks', current: ${SDK})
@@ -27,6 +30,7 @@ OPTIONS
    -d       Enable Debug
    -n       Skip script steps requiring network interaction
    -l       Skip libvlc compilation
+   -u       Compile unstable version of MobileVLCKit
 EOF
 }
 
@@ -68,7 +72,7 @@ buildxcodeproj()
                IPHONEOS_DEPLOYMENT_TARGET=${SDK_MIN} > ${out}
 }
 
-while getopts "hvsdnlk:" OPTION
+while getopts "hvsdnluk:" OPTION
 do
      case $OPTION in
          h)
@@ -91,6 +95,9 @@ do
              ;;
          k)
              SDK=$OPTARG
+             ;;
+         u)
+             UNSTABLEVLCKIT=no
              ;;
          ?)
              usage
@@ -133,21 +140,32 @@ git branch --set-upstream-to=origin/master localAspenBranch
 cd ..
 else
 cd MediaLibraryKit
-git pull --rebase
 git reset --hard ${TESTEDMEDIALIBRARYKITHASH}
 cd ..
 fi
+if [ "$UNSTABLEVLCKIT" = "no" ]; then
 if ! [ -e VLCKit ]; then
 git clone git://git.videolan.org/vlc-bindings/VLCKit.git
 cd VLCKit
-git checkout -B localAspenBranch ${TESTEDVLCKITHASH}
-git branch --set-upstream-to=origin/master localAspenBranch
+git checkout 2.1-stable
+git reset --hard ${TESTEDVLCKITHASH}
 cd ..
 else
 cd VLCKit
-git pull --rebase
 git reset --hard ${TESTEDVLCKITHASH}
 cd ..
+fi
+else
+if ! [ -e VLCKit ]; then
+git clone git://git.videolan.org/vlc-bindings/VLCKit.git
+cd VLCKit
+git reset --hard ${TESTEDUNSTABLEVLCKITHASH}
+cd ..
+else
+cd VLCKit
+git reset --hard ${TESTEDUNSTABLEVLCKITHASH}
+cd ..
+fi
 fi
 if ! [ -e OBSlider ]; then
 git clone git://github.com/ole/OBSlider.git
@@ -173,6 +191,8 @@ fi
 if ! [ -e QuincyKit ]; then
 git clone git://github.com/TheRealKerni/QuincyKit.git
 cd QuincyKit
+git checkout -B localAspenBranch ${TESTEDQUINCYKITHASH}
+git branch --set-upstream-to=origin/master localAspenBranch
 git am ../../patches/quincykit/*.patch
 if [ $? -ne 0 ]; then
 git am --abort
@@ -191,6 +211,19 @@ if ! [ -e GHSidebarNav ]; then
 git clone git://github.com/gresrun/GHSidebarNav.git
 else
 cd GHSidebarNav && git pull --rebase && cd ..
+fi
+if ! [ -e LXReorderableCollectionViewFlowLayout ]; then
+git clone git://github.com/lxcid/LXReorderableCollectionViewFlowLayout.git
+cd LXReorderableCollectionViewFlowLayout
+git am ../../patches/lxreorderablecollectionviewflowlayout/*.patch
+if [ $? -ne 0 ]; then
+git am --abort
+info "Applying the patches failed, aborting git-am"
+exit 1
+fi
+cd ..
+else
+cd LXReorderableCollectionViewFlowLayout && git pull --rebase && cd ..
 fi
 if ! [ -e upnpx ]; then
 git clone git://github.com/fkuehne/upnpx.git
@@ -225,14 +258,8 @@ rm -rf __MACOSX
 fi
 if ! [ -e InAppSettingsKit ]; then
 git clone git://github.com/futuretap/InAppSettingsKit.git
-cd InAppSettingsKit
-git am ../../patches/inappsettingskit/*.patch
-if [ $? -ne 0 ]; then
-git am --abort
-info "Applying the patches failed, aborting git-am"
-exit 1
-fi
-cd ..
+else
+cd WhiteRaccoon && git pull --rebase && cd ..
 fi
 fi
 

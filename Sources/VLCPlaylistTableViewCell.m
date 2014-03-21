@@ -7,6 +7,7 @@
  *
  * Authors: Felix Paul Kühne <fkuehne # videolan.org>
  *          Gleb Pinigin <gpinigin # gmail.com>
+ *          Carola Nitz <nitz.carola #googlemail.com>
  *
  * Refer to the COPYING file of the official project for license.
  *****************************************************************************/
@@ -15,6 +16,13 @@
 #import "VLCLinearProgressIndicator.h"
 #import "VLCThumbnailsCache.h"
 #import <MediaLibraryKit/MLAlbum.h>
+
+@interface VLCPlaylistTableViewCell ()
+{
+    UILongPressGestureRecognizer *_longPress;
+}
+
+@end
 
 @implementation VLCPlaylistTableViewCell
 
@@ -41,36 +49,65 @@
 - (void)setMediaObject:(MLFile *)mediaObject
 {
     if (_mediaObject != mediaObject) {
-        [_mediaObject removeObserver:self forKeyPath:@"computedThumbnail"];
-        [_mediaObject removeObserver:self forKeyPath:@"lastPosition"];
-        [_mediaObject removeObserver:self forKeyPath:@"duration"];
-        [_mediaObject removeObserver:self forKeyPath:@"fileSizeInBytes"];
-        [_mediaObject removeObserver:self forKeyPath:@"title"];
-        [_mediaObject removeObserver:self forKeyPath:@"thumbnailTimeouted"];
-        [_mediaObject removeObserver:self forKeyPath:@"unread"];
-        [_mediaObject removeObserver:self forKeyPath:@"albumTrackNumber"];
-        [_mediaObject removeObserver:self forKeyPath:@"album"];
-        [_mediaObject removeObserver:self forKeyPath:@"artist"];
-        [_mediaObject removeObserver:self forKeyPath:@"genre"];
-        if ([_mediaObject respondsToSelector:@selector(didHide)])
+        if ([_mediaObject isKindOfClass:[MLLabel class]]) {
+            [_mediaObject removeObserver:self forKeyPath:@"files"];
+            [_mediaObject removeObserver:self forKeyPath:@"name"];
+        } else if ([_mediaObject isKindOfClass:[MLShow class]])
+            [_mediaObject removeObserver:self forKeyPath:@"episodes"];
+        else if ([_mediaObject isKindOfClass:[MLShowEpisode class]]) {
+            [_mediaObject removeObserver:self forKeyPath:@"name"];
+            [_mediaObject removeObserver:self forKeyPath:@"files"];
+            [_mediaObject removeObserver:self forKeyPath:@"artworkURL"];
+            [_mediaObject removeObserver:self forKeyPath:@"unread"];
+        } else if ([_mediaObject isKindOfClass:[MLAlbum class]]) {
+            [_mediaObject removeObserver:self forKeyPath:@"name"];
+            [_mediaObject removeObserver:self forKeyPath:@"tracks"];
+        } else if ([_mediaObject isKindOfClass:[MLFile class]]) {
+            [_mediaObject removeObserver:self forKeyPath:@"computedThumbnail"];
+            [_mediaObject removeObserver:self forKeyPath:@"lastPosition"];
+            [_mediaObject removeObserver:self forKeyPath:@"duration"];
+            [_mediaObject removeObserver:self forKeyPath:@"fileSizeInBytes"];
+            [_mediaObject removeObserver:self forKeyPath:@"title"];
+            [_mediaObject removeObserver:self forKeyPath:@"thumbnailTimeouted"];
+            [_mediaObject removeObserver:self forKeyPath:@"unread"];
+            [_mediaObject removeObserver:self forKeyPath:@"albumTrackNumber"];
+            [_mediaObject removeObserver:self forKeyPath:@"album"];
+            [_mediaObject removeObserver:self forKeyPath:@"artist"];
+            [_mediaObject removeObserver:self forKeyPath:@"genre"];
             [(MLFile*)_mediaObject didHide];
+        }
 
         _mediaObject = mediaObject;
+        // prevent the cell from recycling the current snap for random contents
+        self.thumbnailView.image = nil;
 
-        [_mediaObject addObserver:self forKeyPath:@"computedThumbnail" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"lastPosition" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"duration" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"fileSizeInBytes" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"title" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"thumbnailTimeouted" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"unread" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"albumTrackNumber" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"album" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"artist" options:0 context:nil];
-        [_mediaObject addObserver:self forKeyPath:@"genre" options:0 context:nil];
-
-        if ([_mediaObject respondsToSelector:@selector(willDisplay)])
+        if ([_mediaObject isKindOfClass:[MLLabel class]]) {
+            [_mediaObject addObserver:self forKeyPath:@"files" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"name" options:0 context:nil];
+        } else if ([_mediaObject isKindOfClass:[MLShow class]])
+            [_mediaObject addObserver:self forKeyPath:@"episodes" options:0 context:nil];
+        else if ([_mediaObject isKindOfClass:[MLShowEpisode class]]) {
+            [_mediaObject addObserver:self forKeyPath:@"name" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"files" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"artworkURL" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"unread" options:0 context:nil];
+        } else if ([_mediaObject isKindOfClass:[MLAlbum class]]) {
+            [_mediaObject addObserver:self forKeyPath:@"name" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"tracks" options:0 context:nil];
+        } else if ([_mediaObject isKindOfClass:[MLFile class]]) {
+            [_mediaObject addObserver:self forKeyPath:@"computedThumbnail" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"lastPosition" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"duration" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"fileSizeInBytes" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"title" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"thumbnailTimeouted" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"unread" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"albumTrackNumber" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"album" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"artist" options:0 context:nil];
+            [_mediaObject addObserver:self forKeyPath:@"genre" options:0 context:nil];
             [(MLFile*)_mediaObject willDisplay];
+        }
     }
 
     [self _updatedDisplayedInformationForKeyPath:nil];
@@ -80,16 +117,40 @@
 {
     [super setEditing:editing animated:animated];
     [self _updatedDisplayedInformationForKeyPath:@"editing"];
+
+    if (SYSTEM_RUNS_IOS7_OR_LATER) {
+        if (editing) {
+            if (_longPress)
+                [self removeGestureRecognizer:_longPress];
+        } else {
+            if (!_longPress)
+                _longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longTouchGestureAction:)];
+            [self addGestureRecognizer:_longPress];
+        }
+    }
 }
 
 - (void)_updatedDisplayedInformationForKeyPath:(NSString *)keyPath
 {
+    self.thumbnailView.contentMode = UIViewContentModeScaleAspectFill;
+
     if ([self.mediaObject isKindOfClass:[MLFile class]]) {
         MLFile *mediaObject = (MLFile*)self.mediaObject;
         [self _configureForMLFile:mediaObject];
 
         if (([keyPath isEqualToString:@"computedThumbnail"] || !keyPath || (!self.thumbnailView.image && [keyPath isEqualToString:@"editing"])))
             self.thumbnailView.image = [VLCThumbnailsCache thumbnailForMediaFile:mediaObject];
+    } else if ([self.mediaObject isKindOfClass:[MLLabel class]]) {
+        MLLabel *mediaObject = (MLLabel *)self.mediaObject;
+        [self _configureForFolder:mediaObject];
+
+        if ([keyPath isEqualToString:@"files"] || !keyPath || (!self.thumbnailView.image && [keyPath isEqualToString:@"editing"])) {
+            if (mediaObject.files.count == 0) {
+                self.thumbnailView.contentMode = UIViewContentModeScaleAspectFit;
+                self.thumbnailView.image = [UIImage imageNamed:@"folderIcon"];
+            } else
+                self.thumbnailView.image = [VLCThumbnailsCache thumbnailForLabel:mediaObject];
+        }
     } else if ([self.mediaObject isKindOfClass:[MLAlbum class]]) {
         MLAlbum *mediaObject = (MLAlbum *)self.mediaObject;
         [self _configureForAlbum:mediaObject];
@@ -102,7 +163,7 @@
         MLAlbumTrack *mediaObject = (MLAlbumTrack *)self.mediaObject;
         [self _configureForAlbumTrack:mediaObject];
 
-        if ([keyPath isEqualToString:@"computedThumbnail"] || !keyPath || (!self.thumbnailView.image && [keyPath isEqualToString:@"editing"])) {
+        if ([keyPath isEqualToString:@"computedThumbnail"] || !keyPath || !self.thumbnailView.image) {
             MLFile *anyFileFromTrack = mediaObject.files.anyObject;
             self.thumbnailView.image = [VLCThumbnailsCache thumbnailForMediaFile:anyFileFromTrack];
         }
@@ -110,15 +171,14 @@
         MLShow *mediaObject = (MLShow *)self.mediaObject;
         [self _configureForShow:mediaObject];
 
-        if ([keyPath isEqualToString:@"computedThumbnail"] || !keyPath || (!self.thumbnailView.image && [keyPath isEqualToString:@"editing"])) {
-            MLFile *anyFileFromAnyEpisode = [mediaObject.episodes.anyObject files].anyObject;
-            self.thumbnailView.image = [VLCThumbnailsCache thumbnailForMediaFile:anyFileFromAnyEpisode];
+        if ([keyPath isEqualToString:@"computedThumbnail"] || [keyPath isEqualToString:@"episodes"] || !keyPath || !self.thumbnailView.image) {
+            self.thumbnailView.image = [VLCThumbnailsCache thumbnailForShow:mediaObject];
         }
     } else if ([self.mediaObject isKindOfClass:[MLShowEpisode class]]) {
         MLShowEpisode *mediaObject = (MLShowEpisode *)self.mediaObject;
         [self _configureForShowEpisode:mediaObject];
 
-        if ([keyPath isEqualToString:@"computedThumbnail"] || !keyPath || (!self.thumbnailView.image && [keyPath isEqualToString:@"editing"])) {
+        if ([keyPath isEqualToString:@"computedThumbnail"] || !keyPath || !self.thumbnailView.image) {
             MLFile *anyFileFromEpisode = mediaObject.files.anyObject;
             self.thumbnailView.image = [VLCThumbnailsCache thumbnailForMediaFile:anyFileFromEpisode];
         }
@@ -147,6 +207,8 @@
     self.subtitleLabel.text = [string stringByAppendingString:[NSString stringWithFormat:(count > 1) ? NSLocalizedString(@"LIBRARY_EPISODES", @"") : NSLocalizedString(@"LIBRARY_SINGLE_EPISODE", @""), count, show.unreadEpisodes.count]];
     self.mediaIsUnreadView.hidden = YES;
     self.progressIndicator.hidden = YES;
+    self.folderIconView.image = [UIImage imageNamed:@"PlayingExternally"];
+    self.folderIconView.hidden = NO;
 }
 
 - (void)_configureForAlbumTrack:(MLAlbumTrack *)albumTrack
@@ -154,8 +216,8 @@
     MLFile *anyFileFromTrack = albumTrack.files.anyObject;
     self.subtitleLabel.text = [NSString stringWithFormat:@"%@ — %@ — %@", albumTrack.artist, [NSString stringWithFormat:NSLocalizedString(@"LIBRARY_TRACK_N", @""), albumTrack.trackNumber.intValue], [VLCTime timeWithNumber:[anyFileFromTrack duration]]];
     self.titleLabel.text = albumTrack.title;
-
     [self _showPositionOfItem:anyFileFromTrack];
+    self.folderIconView.hidden = YES;
 }
 
 - (void)_configureForShowEpisode:(MLShowEpisode *)showEpisode
@@ -170,6 +232,7 @@
         self.subtitleLabel.text = [NSString stringWithFormat:@"S%02dE%02d — %@", showEpisode.seasonNumber.intValue, showEpisode.episodeNumber.intValue, [VLCTime timeWithNumber:[anyFileFromEpisode duration]]];
 
     [self _showPositionOfItem:anyFileFromEpisode];
+    self.folderIconView.hidden = YES;
 }
 
 - (void)_configureForAlbum:(MLAlbum *)album
@@ -179,15 +242,29 @@
     NSUInteger count = album.tracks.count;
     NSMutableString *string = [[NSMutableString alloc] init];
     if (anyTrack) {
-        [string appendString:anyTrack.artist];
-        [string appendString:@" — "];
+        if (anyTrack.artist.length > 0) {
+            [string appendString:anyTrack.artist];
+            [string appendString:@" — "];
+        }
     }
     [string appendString:[NSString stringWithFormat:(count > 1) ? NSLocalizedString(@"LIBRARY_TRACKS", @"") : NSLocalizedString(@"LIBRARY_SINGLE_TRACK", @""), count]];
-    if (album.releaseYear)
+    if (album.releaseYear.length > 0)
         [string appendFormat:@" — %@", album.releaseYear];
     self.subtitleLabel.text = string;
     self.mediaIsUnreadView.hidden = YES;
     self.progressIndicator.hidden = YES;
+    self.folderIconView.hidden = YES;
+}
+
+- (void)_configureForFolder:(MLLabel *)label
+{
+    self.titleLabel.text = label.name;
+    NSUInteger count = label.files.count;
+    self.subtitleLabel.text = [NSString stringWithFormat:(count == 1) ? NSLocalizedString(@"LIBRARY_SINGLE_TRACK", @"") : NSLocalizedString(@"LIBRARY_TRACKS", @""), count];
+    self.mediaIsUnreadView.hidden = YES;
+    self.progressIndicator.hidden = YES;
+    self.folderIconView.image = [UIImage imageNamed:@"folderIcon"];
+    self.folderIconView.hidden = NO;
 }
 
 - (void)_configureForMLFile:(MLFile *)mediaFile
@@ -213,8 +290,8 @@
                 self.subtitleLabel.text = [self.subtitleLabel.text stringByAppendingFormat:@" — %@x%@", width, height];
         }
     }
-
     [self _showPositionOfItem:mediaFile];
+    self.folderIconView.hidden = YES;
 }
 
 - (void)_showPositionOfItem:(MLFile *)mediaItem
@@ -237,6 +314,26 @@
         [self.progressIndicator setNeedsDisplay];
         self.mediaIsUnreadView.hidden = !mediaItem.unread.intValue;
     }
+}
+
+- (void)longTouchGestureAction:(UIGestureRecognizer *)recognizer
+{
+    CGRect frame = self.frame;
+    if (frame.size.height > 90.)
+        frame.size.height = 90.;
+    else if (recognizer.state == UIGestureRecognizerStateBegan)
+        frame.size.height = 180;
+
+    void (^animationBlock)() = ^() {
+        self.frame = frame;
+    };
+
+    void (^completionBlock)(BOOL finished) = ^(BOOL finished) {
+        self.frame = frame;
+    };
+
+    NSTimeInterval animationDuration = .2;
+    [UIView animateWithDuration:animationDuration animations:animationBlock completion:completionBlock];
 }
 
 @end

@@ -121,7 +121,7 @@
     GTLQueryDrive *query;
 
     query = [GTLQueryDrive queryForFilesList];
-    query.fields = @"items(originalFilename,title,mimeType,fileExtension,fileSize,iconLink,downloadUrl,webContentLink),nextPageToken";
+    query.fields = @"items(originalFilename,title,mimeType,fileExtension,fileSize,iconLink,downloadUrl,webContentLink,thumbnailLink),nextPageToken";
     query.pageToken = _nextPageToken;
     query.maxResults = 100;
 
@@ -191,7 +191,7 @@
         return;
     }
 
-    APLog(@"found filtered metadata for %lu files", _currentFileList.count);
+    APLog(@"found filtered metadata for %lu files", (unsigned long)_currentFileList.count);
     if ([self.delegate respondsToSelector:@selector(mediaListUpdated)])
         [self.delegate mediaListUpdated];
 }

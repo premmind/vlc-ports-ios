@@ -133,7 +133,8 @@
     _searchDisplayController.delegate = self;
     _searchDisplayController.searchResultsDataSource = self;
     _searchDisplayController.searchResultsDelegate = self;
-    _searchDisplayController.searchBar.searchBarStyle = UIBarStyleBlack;
+    if (SYSTEM_RUNS_IOS7_OR_LATER)
+        _searchDisplayController.searchBar.searchBarStyle = UIBarStyleBlack;
     _searchBar.delegate = self;
     self.tableView.tableHeaderView = _searchBar; //this line add the searchBar on the top of tableView.
 
@@ -160,7 +161,7 @@
 {
     if (tableView == self.searchDisplayController.searchResultsTableView)
         return _searchData.count;
-	else {
+    else {
         if (_serverType == kVLCServerTypeUPNP)
             return _mutableObjectList.count;
 
@@ -196,7 +197,6 @@
 
             MediaServer1ItemRes *resource = nil;
             NSEnumerator *e = [[mediaItem resources] objectEnumerator];
-            NSURL *itemURL;
             while((resource = (MediaServer1ItemRes*)[e nextObject])){
                 if (resource.bitrate > 0 && resource.durationInSeconds > 0) {
                     mediaSize = resource.size;
@@ -204,10 +204,6 @@
                     bitrate = resource.bitrate;
                 }
             }
-            NSArray *uriCollectionObjects = [[mediaItem uriCollection] allValues];
-            itemURL = [NSURL URLWithString:uriCollectionObjects[0]];
-            cell.downloadURL = itemURL;
-
             if (mediaSize < 1)
                 mediaSize = [mediaItem.size longLongValue];
 
@@ -217,16 +213,14 @@
             [cell setSubtitle: [NSString stringWithFormat:@"%@ (%@)", [NSByteCountFormatter stringFromByteCount:mediaSize countStyle:NSByteCountFormatterCountStyleFile], [VLCTime timeWithInt:durationInSeconds * 1000].stringValue]];
             [cell setIsDirectory:NO];
             cell.isDownloadable = YES;
-            if (![mediaItem.albumArt isEqualToString:NULL]) {
-                NSData* imageData = [[NSData alloc]initWithContentsOfURL:[NSURL URLWithString:mediaItem.albumArt]];
-                UIImage* image = [[UIImage alloc] initWithData:imageData];
-                [cell setIcon:image];
-            }
-            else
-                [cell setIcon:[UIImage imageNamed:@"blank"]];
+            if (mediaItem.albumArt != nil)
+                [cell setIconURL:[NSURL URLWithString:mediaItem.albumArt]];
+            [cell setIcon:[UIImage imageNamed:@"blank"]];
             cell.delegate = self;
         } else {
             [cell setIsDirectory:YES];
+            if (item.albumArt != nil)
+                [cell setIconURL:[NSURL URLWithString:item.albumArt]];
             [cell setIcon:[UIImage imageNamed:@"folder"]];
         }
         [cell setTitle:[item title]];
@@ -292,12 +286,19 @@
                 mediaItem = _mutableObjectList[indexPath.row];
 
             NSURL *itemURL;
+            NSArray *uriCollectionKeys = [[mediaItem uriCollection] allKeys];
+            NSUInteger count = uriCollectionKeys.count;
+            NSRange position;
+            NSUInteger correctIndex = 0;
+            for (NSUInteger i = 0; i < count; i++) {
+                position = [uriCollectionKeys[i] rangeOfString:@"http-get:*:video/"];
+                if (position.location != NSNotFound)
+                    correctIndex = i;
+            }
             NSArray *uriCollectionObjects = [[mediaItem uriCollection] allValues];
-            if (uriCollectionObjects.count == 1)
-                itemURL = [NSURL URLWithString:mediaItem.uri];
-            else
-                itemURL = [NSURL URLWithString:uriCollectionObjects[0]];
 
+            if (uriCollectionObjects.count > 0)
+                itemURL = [NSURL URLWithString:uriCollectionObjects[correctIndex]];
             if (itemURL) {
                 VLCAppDelegate* appDelegate = [UIApplication sharedApplication].delegate;
                 [appDelegate openMovieFromURL:itemURL];
@@ -325,8 +326,8 @@
                 UIAlertView * alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"FILE_NOT_SUPPORTED", @"") message:[NSString stringWithFormat:NSLocalizedString(@"FILE_NOT_SUPPORTED_LONG", @""), properObjectName] delegate:self cancelButtonTitle:NSLocalizedString(@"BUTTON_CANCEL", @"") otherButtonTitles:nil];
                 [alert show];
             } else
-                [self _openURLStringAndDismiss:[_FTPListDirRequest.fullURLString stringByAppendingString:properObjectName]];
-      }
+                [self _streamFTPFile:properObjectName];
+        }
     }
     [tableView deselectRowAtIndexPath:indexPath animated:NO];
 }
@@ -370,10 +371,30 @@
     [[(VLCAppDelegate*)[UIApplication sharedApplication].delegate downloadViewController] addURLToDownloadList:URLToQueue fileNameOfMedia:nil];
 }
 
-- (void)_downloadUPNPFile:(NSURL *)url fileNameOfMedia:(NSString*) fileName;
+- (void)_downloadUPNPFileFromMediaItem:(MediaServer1ItemObject *)mediaItem
 {
-    fileName = [[fileName stringByAppendingString:@"."] stringByAppendingString:[[url absoluteString] pathExtension]];
-    [[(VLCAppDelegate*)[UIApplication sharedApplication].delegate downloadViewController] addURLToDownloadList:url fileNameOfMedia:fileName];
+    NSURL *itemURL;
+    NSArray *uriCollectionKeys = [[mediaItem uriCollection] allKeys];
+    NSUInteger count = uriCollectionKeys.count;
+    NSRange position;
+    NSUInteger correctIndex = 0;
+    for (NSUInteger i = 0; i < count; i++) {
+        position = [uriCollectionKeys[i] rangeOfString:@"http-get:*:video/"];
+        if (position.location != NSNotFound)
+            correctIndex = i;
+    }
+    NSArray *uriCollectionObjects = [[mediaItem uriCollection] allValues];
+
+    if (uriCollectionObjects.count > 0)
+        itemURL = [NSURL URLWithString:uriCollectionObjects[correctIndex]];
+
+    if (![itemURL.absoluteString isSupportedFormat]) {
+        UIAlertView * alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"FILE_NOT_SUPPORTED", @"") message:[NSString stringWithFormat:NSLocalizedString(@"FILE_NOT_SUPPORTED_LONG", @""), [mediaItem uri]] delegate:self cancelButtonTitle:NSLocalizedString(@"BUTTON_CANCEL", @"") otherButtonTitles:nil];
+        [alert show];
+    } else if (itemURL) {
+        NSString *fileName = [[mediaItem.title stringByAppendingString:@"."] stringByAppendingString:[[itemURL absoluteString] pathExtension]];
+        [[(VLCAppDelegate*)[UIApplication sharedApplication].delegate downloadViewController] addURLToDownloadList:itemURL fileNameOfMedia:fileName];
+    }
 }
 
 - (void)requestCompleted:(WRRequest *)request
@@ -412,19 +433,8 @@
         else
             item = _mutableObjectList[[self.tableView indexPathForCell:cell].row];
 
-        MediaServer1ItemRes *resource = nil;
-        NSEnumerator *e = [[item resources] objectEnumerator];
-        NSURL *itemURL;
-        while((resource = (MediaServer1ItemRes*)[e nextObject])){
-            itemURL = [NSURL URLWithString:[[item uri] stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
-        }
-        if (![[item uri] isSupportedFormat]) {
-            UIAlertView * alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"FILE_NOT_SUPPORTED", @"") message:[NSString stringWithFormat:NSLocalizedString(@"FILE_NOT_SUPPORTED_LONG", @""), [item uri]] delegate:self cancelButtonTitle:NSLocalizedString(@"BUTTON_CANCEL", @"") otherButtonTitles:nil];
-            [alert show];
-        } else {
-            [self _downloadUPNPFile:itemURL fileNameOfMedia:[item title]];
-            [cell.statusLabel showStatusMessage:NSLocalizedString(@"DOWNLOADING", @"")];
-        }
+        [self _downloadUPNPFileFromMediaItem:item];
+        [cell.statusLabel showStatusMessage:NSLocalizedString(@"DOWNLOADING", @"")];
     }else if (_serverType == kVLCServerTypeFTP) {
         NSString *rawObjectName;
         NSMutableArray *ObjList = [[NSMutableArray alloc] init];
@@ -451,10 +461,12 @@
 }
 
 #pragma mark - communication with playback engine
-- (void)_openURLStringAndDismiss:(NSString *)url
+- (void)_streamFTPFile:(NSString *)fileName
 {
+    NSURL *URLToPlay = [NSURL URLWithString:[[@"ftp" stringByAppendingFormat:@"://%@%@/%@/%@", [self _credentials], _ftpServerAddress, _ftpServerPath, fileName] stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding]];
+
     VLCAppDelegate* appDelegate = [UIApplication sharedApplication].delegate;
-    [appDelegate openMovieFromURL:[NSURL URLWithString:url]];
+    [appDelegate openMovieFromURL:URLToPlay];
 }
 
 #pragma mark - Search Display Controller Delegate

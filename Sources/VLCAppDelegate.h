@@ -29,6 +29,12 @@
 - (void)disableIdleTimer;
 - (void)activateIdleTimer;
 
+- (void)networkActivityStarted;
+- (BOOL)haveNetworkActivity;
+- (void)networkActivityStopped;
+
+- (void)cleanCache;
+
 - (void)openMediaFromManagedObject:(NSManagedObject *)file;
 - (void)openMovieFromURL:(NSURL *)url;
 - (void)openMediaList:(VLCMediaList*)list atIndex:(int)index;

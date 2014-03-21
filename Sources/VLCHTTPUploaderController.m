@@ -23,6 +23,9 @@
 #import <arpa/inet.h>
 
 @implementation VLCHTTPUploaderController
+{
+    UIBackgroundTaskIdentifier _backgroundTaskIdentifier;
+}
 
 - (id)init
 {
@@ -39,12 +42,26 @@
 
 - (void)applicationDidBecomeActive: (NSNotification *)notification
 {
-    [self changeHTTPServerState:[[NSUserDefaults standardUserDefaults] boolForKey:kVLCSettingSaveHTTPUploadServerStatus]];
+    if (!self.httpServer.isRunning)
+        [self changeHTTPServerState:[[NSUserDefaults standardUserDefaults] boolForKey:kVLCSettingSaveHTTPUploadServerStatus]];
+
+    if (_backgroundTaskIdentifier && _backgroundTaskIdentifier != UIBackgroundTaskInvalid) {
+        [[UIApplication sharedApplication] endBackgroundTask:_backgroundTaskIdentifier];
+        _backgroundTaskIdentifier = 0;
+    }
 }
 
 - (void)applicationDidEnterBackground: (NSNotification *)notification
 {
-    [self changeHTTPServerState:NO];
+    if (self.httpServer.isRunning) {
+        if (!_backgroundTaskIdentifier || _backgroundTaskIdentifier == UIBackgroundTaskInvalid) {
+            _backgroundTaskIdentifier = [[UIApplication sharedApplication] beginBackgroundTaskWithName:@"VLCUploader" expirationHandler:^{
+                [self changeHTTPServerState:NO];
+                [[UIApplication sharedApplication] endBackgroundTask:_backgroundTaskIdentifier];
+                _backgroundTaskIdentifier = 0;
+            }];
+        }
+    }
 }
 
 - (BOOL)changeHTTPServerState:(BOOL)state
@@ -53,6 +70,9 @@
         [self.httpServer stop];
         return true;
     }
+    // clean cache before accepting new stuff
+    [(VLCAppDelegate *)[UIApplication sharedApplication].delegate cleanCache];
+
     // Initialize our http server
     _httpServer = [[HTTPServer alloc] init];
     [_httpServer setInterface:WifiInterfaceName];
@@ -88,8 +108,10 @@
                 return true;
         }
 
-        if (error.code != 0)
+        if (error.code != 0) {
             APLog(@"Error starting HTTP Server: %@", error.localizedDescription);
+            [self.httpServer stop];
+        }
         return false;
     }
     return true;
@@ -148,7 +170,7 @@
         [fileManager removeItemAtPath:filepath error:nil];
     }
 
-    [UIApplication sharedApplication].networkActivityIndicatorVisible = NO;
+    [(VLCAppDelegate*)[UIApplication sharedApplication].delegate networkActivityStopped];
     [(VLCAppDelegate*)[UIApplication sharedApplication].delegate activateIdleTimer];
 
     /* update media library when file upload was completed */

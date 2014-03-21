@@ -50,7 +50,7 @@
         _downloadInProgress = NO;
     } else {
         _downloadInProgress = YES;
-        [UIApplication sharedApplication].networkActivityIndicatorVisible = YES;
+        [(VLCAppDelegate*)[UIApplication sharedApplication].delegate networkActivityStarted];
         [(VLCAppDelegate*)[UIApplication sharedApplication].delegate disableIdleTimer];
     }
 }
@@ -72,7 +72,7 @@
         _downloadInProgress = NO;
     } else {
         _downloadInProgress = YES;
-        [UIApplication sharedApplication].networkActivityIndicatorVisible = YES;
+        [(VLCAppDelegate*)[UIApplication sharedApplication].delegate networkActivityStarted];
         [(VLCAppDelegate*)[UIApplication sharedApplication].delegate disableIdleTimer];
     }
 }
@@ -83,7 +83,7 @@
     if (_statusCode == 200) {
         _expectedDownloadSize = [response expectedContentLength];
         [self.delegate downloadStarted];
-        APLog(@"expected download size: %lu", _expectedDownloadSize);
+        APLog(@"expected download size: %lu", (unsigned long)_expectedDownloadSize);
     } else {
         APLog(@"unhandled status code %lu", (unsigned long)_statusCode);
         if ([self.delegate respondsToSelector:@selector(downloadFailedWithErrorDescription:)])
@@ -122,13 +122,15 @@
     [fileHandle closeFile];
 }
 
--(void)connectionDidFinishLoading:(NSURLConnection *)connection {
+-(void)connectionDidFinishLoading:(NSURLConnection *)connection
+{
     APLog(@"http file download complete");
 
     [self _downloadEnded];
 }
 
--(void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error {
+-(void)connection:(NSURLConnection *)connection didFailWithError:(NSError *)error
+{
     APLog(@"http file download failed (%li)", (long)error.code);
 
     if ([self.delegate respondsToSelector:@selector(downloadFailedWithErrorDescription:)])
@@ -155,7 +157,7 @@
 - (void)_downloadEnded
 {
     _downloadInProgress = NO;
-    [UIApplication sharedApplication].networkActivityIndicatorVisible = NO;
+    [(VLCAppDelegate*)[UIApplication sharedApplication].delegate networkActivityStopped];
     [(VLCAppDelegate*)[UIApplication sharedApplication].delegate activateIdleTimer];
 
     NSArray *searchPaths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);

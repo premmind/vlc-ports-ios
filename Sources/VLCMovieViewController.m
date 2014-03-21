@@ -57,10 +57,12 @@
 
     BOOL _swipeGesturesEnabled;
     NSString * panType;
+    UIPinchGestureRecognizer *_pinchRecognizer;
     UIPanGestureRecognizer *_panRecognizer;
     UISwipeGestureRecognizer *_swipeRecognizerLeft;
     UISwipeGestureRecognizer *_swipeRecognizerRight;
     UITapGestureRecognizer *_tapRecognizer;
+    UITapGestureRecognizer *_tapOnVideoRecognizer;
 }
 
 @property (nonatomic, strong) UIPopoverController *masterPopoverController;
@@ -78,6 +80,8 @@
 
 - (void)dealloc
 {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+
     if (_tapRecognizer)
         [self.view removeGestureRecognizer:_tapRecognizer];
     if (_swipeRecognizerLeft)
@@ -86,6 +90,16 @@
         [self.view removeGestureRecognizer:_swipeRecognizerRight];
     if (_panRecognizer)
         [self.view removeGestureRecognizer:_panRecognizer];
+    if (_pinchRecognizer)
+        [self.view removeGestureRecognizer:_pinchRecognizer];
+    [self.view removeGestureRecognizer:_tapOnVideoRecognizer];
+
+    _tapRecognizer = nil;
+    _swipeRecognizerLeft = nil;
+    _swipeRecognizerRight = nil;
+    _panRecognizer = nil;
+    _pinchRecognizer = nil;
+    _tapOnVideoRecognizer = nil;
 
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
@@ -213,18 +227,19 @@
     self.trackNameLabel.text = self.artistNameLabel.text = self.albumNameLabel.text = @"";
 
     _movieView.userInteractionEnabled = NO;
-    UITapGestureRecognizer *tapOnVideoRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(toggleControlsVisible)];
-    tapOnVideoRecognizer.delegate = self;
-    [self.view addGestureRecognizer:tapOnVideoRecognizer];
+    _tapOnVideoRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(toggleControlsVisible)];
+    _tapOnVideoRecognizer.delegate = self;
+    [self.view addGestureRecognizer:_tapOnVideoRecognizer];
 
-    _displayRemainingTime = [[[NSUserDefaults standardUserDefaults] objectForKey:kVLCShowRemainingTime] boolValue];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    _displayRemainingTime = [[defaults objectForKey:kVLCShowRemainingTime] boolValue];
+    _swipeGesturesEnabled = [[defaults objectForKey:kVLCSettingPlaybackGestures] boolValue];
 
-    UIPinchGestureRecognizer *pinchRecognizer = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinchGesture:)];
-    pinchRecognizer.delegate = self;
-    [self.view addGestureRecognizer:pinchRecognizer];
-
-    _swipeGesturesEnabled = YES;
     if (_swipeGesturesEnabled) {
+        _pinchRecognizer = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinchGesture:)];
+        _pinchRecognizer.delegate = self;
+        [self.view addGestureRecognizer:_pinchRecognizer];
+
         _tapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tapRecognized)];
         [_tapRecognizer setNumberOfTouchesRequired:2];
         _panRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panRecognized:)];
@@ -347,6 +362,8 @@
 {
     [super viewWillAppear:animated];
 
+    _swipeGesturesEnabled = [[[NSUserDefaults standardUserDefaults] objectForKey:kVLCSettingPlaybackGestures] boolValue];
+
     [self.navigationController setNavigationBarHidden:YES animated:YES];
 
     if (!SYSTEM_RUNS_IOS7_OR_LATER) {
@@ -388,7 +405,8 @@
         return;
     }
 
-    _listPlayer = [[VLCMediaListPlayer alloc] initWithOptions:@[[NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFont, [defaults objectForKey:kVLCSettingSubtitlesFont]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFontColor, [defaults objectForKey:kVLCSettingSubtitlesFontColor]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFontSize, [defaults objectForKey:kVLCSettingSubtitlesFontSize]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingDeinterlace, [defaults objectForKey:kVLCSettingDeinterlace]]]];
+    _listPlayer = [[VLCMediaListPlayer alloc]
+                   initWithOptions:@[[NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFont, [self _resolveFontName]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFontColor, [defaults objectForKey:kVLCSettingSubtitlesFontColor]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFontSize, [defaults objectForKey:kVLCSettingSubtitlesFontSize]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingDeinterlace, [defaults objectForKey:kVLCSettingDeinterlace]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingNetworkCaching, [defaults objectForKey:kVLCSettingNetworkCaching]]]];
     _mediaPlayer = _listPlayer.mediaPlayer;
     [_mediaPlayer setDelegate:self];
     [_mediaPlayer setDrawable:self.movieView];
@@ -398,7 +416,6 @@
     if (self.mediaItem) {
         MLFile *item = self.mediaItem;
         media = [VLCMedia mediaWithURL:[NSURL URLWithString:item.url]];
-        item.unread = @(NO);
     } else if (!self.mediaList) {
         media = [VLCMedia mediaWithURL:self.url];
         [media parse];
@@ -620,6 +637,45 @@
     }
 }
 
+- (NSString *)_resolveFontName
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL bold = [[defaults objectForKey:kVLCSettingSubtitlesBoldFont] boolValue];
+    NSString *font = [defaults objectForKey:kVLCSettingSubtitlesFont];
+    NSDictionary *fontMap = @{
+                              @"AmericanTypewriter":   @"AmericanTypewriter-Bold",
+                              @"ArialMT":              @"Arial-BoldMT",
+                              @"ArialHebrew":          @"ArialHebrew-Bold",
+                              @"ChalkboardSE-Regular": @"ChalkboardSE-Bold",
+                              @"CourierNewPSMT":       @"CourierNewPS-BoldMT",
+                              @"Georgia":              @"Georgia-Bold",
+                              @"GillSans":             @"GillSans-Bold",
+                              @"GujaratiSangamMN":     @"GujaratiSangamMN-Bold",
+                              @"STHeitiSC-Light":      @"STHeitiSC-Medium",
+                              @"STHeitiTC-Light":      @"STHeitiTC-Medium",
+                              @"HelveticaNeue":        @"HelveticaNeue-Bold",
+                              @"HiraKakuProN-W3":      @"HiraKakuProN-W6",
+                              @"HiraMinProN-W3":       @"HiraMinProN-W6",
+                              @"HoeflerText-Regular":  @"HoeflerText-Black",
+                              @"Kailasa":              @"Kailasa-Bold",
+                              @"KannadaSangamMN":      @"KannadaSangamMN-Bold",
+                              @"MalayalamSangamMN":    @"MalayalamSangamMN-Bold",
+                              @"OriyaSangamMN":        @"OriyaSangamMN-Bold",
+                              @"SinhalaSangamMN":      @"SinhalaSangamMN-Bold",
+                              @"SnellRoundhand":       @"SnellRoundhand-Bold",
+                              @"TamilSangamMN":        @"TamilSangamMN-Bold",
+                              @"TeluguSangamMN":       @"TeluguSangamMN-Bold",
+                              @"TimesNewRomanPSMT":    @"TimesNewRomanPS-BoldMT",
+                              @"Zapfino":              @"Zapfino"
+                              };
+
+    if (!bold) {
+        return font;
+    } else {
+        return fontMap[font];
+    }
+}
+
 #pragma mark - remote events
 
 - (void)viewDidAppear:(BOOL)animated
@@ -660,12 +716,15 @@
 
         case UIEventSubtypeRemoteControlNextTrack:
             [self forward:nil];
+            break;
 
         case UIEventSubtypeRemoteControlPreviousTrack:
             [self backward:nil];
+            break;
 
         case UIEventSubtypeRemoteControlStop:
             [self closePlayback:nil];
+            break;
 
         default:
             break;
@@ -676,12 +735,18 @@
 
 - (void)handlePinchGesture:(UIPinchGestureRecognizer *)recognizer
 {
+    if (!_swipeGesturesEnabled)
+        return;
+
     if (recognizer.velocity < 0.)
         [self closePlayback:nil];
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch
 {
+    if (!_swipeGesturesEnabled)
+        return NO;
+
     if (touch.view != self.view)
         return NO;
 
@@ -690,6 +755,9 @@
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer
 {
+    if (!_swipeGesturesEnabled)
+        return NO;
+
     return YES;
 }
 
@@ -975,7 +1043,8 @@
     [_subtitleActionSheet showInView:(UIButton *)sender];
 }
 
-- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
+- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex
+{
     if (buttonIndex == [actionSheet cancelButtonIndex])
         return;
 
@@ -1068,10 +1137,14 @@
             musicPlayer.volume += 0.01;
     } else if ([panType isEqual:@"Brightness"]) {
         CGFloat brightness = [UIScreen mainScreen].brightness;
+
         if (panDirectionY > 0)
-            [[UIScreen mainScreen] setBrightness:(brightness - 0.01)];
+            brightness = brightness - 0.01;
         else
-            [[UIScreen mainScreen] setBrightness:(brightness + 0.01)];
+            brightness = brightness + 0.01;
+
+        [[UIScreen mainScreen] setBrightness:brightness];
+        self.brightnessSlider.value = brightness * 2.;
 
         NSString *brightnessHUD = [NSString stringWithFormat:@"%@: %@ %%", NSLocalizedString(@"VFILTER_BRIGHTNESS", @""), [[[NSString stringWithFormat:@"%f",(brightness*100)] componentsSeparatedByString:@"."] objectAtIndex:0]];
         [self.statusLabel showStatusMessage:brightnessHUD];
@@ -1360,7 +1433,8 @@
            || toInterfaceOrientation != UIInterfaceOrientationPortraitUpsideDown;
 }
 
-- (void)willRotateToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration {
+- (void)willRotateToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration
+{
     [super willRotateToInterfaceOrientation:toInterfaceOrientation duration:duration];
 
     if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) {
@@ -1381,7 +1455,7 @@
 - (void)endInterruption
 {
     if (_shouldResumePlaying) {
-        [_listPlayer play];
+        [_mediaPlayer play];
         _shouldResumePlaying = NO;
     }
 }
