@@ -227,7 +227,6 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
                 }
                 _reorderLayout = [[LXReorderableCollectionViewFlowLayout alloc] init];
                 [self.collectionView setCollectionViewLayout:_reorderLayout animated:NO];
-                _folderLayout = nil;
             }
         }
         _foundMedia = [NSMutableArray arrayWithArray:[folder sortedFolderItems]];
@@ -622,8 +621,8 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
     if (self.editing) {
         if (_libraryMode == VLCLibraryModeCreateFolder) {
             _folderObject = _foundMedia[indexPath.item];
-            _libraryMode = _previousLibraryMode;
             [self createFolderWithName:nil];
+             _libraryMode = _previousLibraryMode;
         }
         [(VLCPlaylistCollectionViewCell *)[collectionView cellForItemAtIndexPath:indexPath] selectionUpdate];
         return;
@@ -758,7 +757,8 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
     else
         _indexPaths = [NSMutableArray arrayWithArray:[self.tableView indexPathsForSelectedRows]];
 
-    for (NSIndexPath *path in _indexPaths) {
+    for (NSInteger i = _indexPaths.count - 1; i >=0; i--) {
+        NSIndexPath *path = _indexPaths[i];
         id mediaObject;
         if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
             mediaObject = _foundMedia[path.item];
@@ -806,6 +806,7 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 
         if ([folder.files count] == 0) {
             [self removeMediaObject:folder updateDatabase:YES];
+            [self setEditing:NO];
             [self backToAllItems:nil];
         }
     }
@@ -854,8 +855,11 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
 
             for (NSInteger i = [_indexPaths count] - 1; i >= 0; i--) {
                 NSIndexPath *path = _indexPaths[i];
-                if (![_foundMedia[path.row] isKindOfClass:[MLFile class]])
+                if (_libraryMode != VLCLibraryModeCreateFolder && ![_foundMedia[path.row] isKindOfClass:[MLFile class]])
                     continue;
+                if (_libraryMode == VLCLibraryModeCreateFolder)
+                    [self updateViewContents];
+
                 MLFile *file = _foundMedia[path.row];
                 file.labels = [NSSet setWithObjects:label, nil];
                 [_foundMedia removeObjectAtIndex:path.row];
@@ -977,7 +981,6 @@ static NSString *kDisplayedFirstSteps = @"Did we display the first steps tutoria
             }
             _folderLayout = [[VLCFolderCollectionViewFlowLayout alloc] init];
             [self.collectionView setCollectionViewLayout:_folderLayout animated:NO];
-            _reorderLayout = nil;
             [_collectionView addGestureRecognizer:_longPressGestureRecognizer];
         }
     }

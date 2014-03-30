@@ -106,11 +106,11 @@
 
 #pragma mark - Managing the media item
 
-- (void)setMediaItem:(id)newMediaItem
+- (void)setFileFromMediaLibrary:(id)newFile
 {
-    if (_mediaItem != newMediaItem) {
+    if (_fileFromMediaLibrary != newFile) {
         [self _stopPlayback];
-        _mediaItem = newMediaItem;
+        _fileFromMediaLibrary = newFile;
         if (_viewAppeared)
             [self _startPlayback];
     }
@@ -218,6 +218,8 @@
                    name:UIApplicationDidBecomeActiveNotification object:nil];
     [center addObserver:self selector:@selector(applicationDidEnterBackground:)
                    name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [center addObserver:self selector:@selector(audioSessionRouteChange:)
+                   name:AVAudioSessionRouteChangeNotification object:nil];
 
     _playingExternallyTitle.text = NSLocalizedString(@"PLAYING_EXTERNALLY_TITLE", @"");
     _playingExternallyDescription.text = NSLocalizedString(@"PLAYING_EXTERNALLY_DESC", @"");
@@ -400,28 +402,36 @@
 
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
 
-    if (!self.mediaItem && !self.url && !self.mediaList) {
+    if (!self.fileFromMediaLibrary && !self.url && !self.mediaList) {
         [self _stopPlayback];
         return;
     }
 
-    _listPlayer = [[VLCMediaListPlayer alloc]
-                   initWithOptions:@[[NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFont, [self _resolveFontName]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFontColor, [defaults objectForKey:kVLCSettingSubtitlesFontColor]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFontSize, [defaults objectForKey:kVLCSettingSubtitlesFontSize]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingDeinterlace, [defaults objectForKey:kVLCSettingDeinterlace]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingNetworkCaching, [defaults objectForKey:kVLCSettingNetworkCaching]]]];
+    NSMutableDictionary *mediaDictionary = [[NSMutableDictionary alloc] init];
+
+    _listPlayer = [[VLCMediaListPlayer alloc] initWithOptions:@[[NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFont, [self _resolveFontName]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFontColor, [defaults objectForKey:kVLCSettingSubtitlesFontColor]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingSubtitlesFontSize, [defaults objectForKey:kVLCSettingSubtitlesFontSize]], [NSString stringWithFormat:@"--%@=%@", kVLCSettingNetworkCaching, [defaults objectForKey:kVLCSettingNetworkCaching]]]];
     _mediaPlayer = _listPlayer.mediaPlayer;
     [_mediaPlayer setDelegate:self];
     [_mediaPlayer setDrawable:self.movieView];
+    if ([[defaults objectForKey:kVLCSettingDeinterlace] intValue] != 0)
+        [_mediaPlayer setDeinterlaceFilter:@"blend"];
+    else
+        [_mediaPlayer setDeinterlaceFilter:nil];
     self.trackNameLabel.text = self.artistNameLabel.text = self.albumNameLabel.text = @"";
 
     VLCMedia *media;
-    if (self.mediaItem) {
-        MLFile *item = self.mediaItem;
+    if (self.fileFromMediaLibrary) {
+        MLFile *item = self.fileFromMediaLibrary;
         media = [VLCMedia mediaWithURL:[NSURL URLWithString:item.url]];
-    } else if (!self.mediaList) {
+    } else if (self.mediaList) {
+        media = [self.mediaList mediaAtIndex:self.itemInMediaListToBePlayedFirst];
+        [media parse];
+    } else {
         media = [VLCMedia mediaWithURL:self.url];
         [media parse];
     }
 
-    NSMutableDictionary *mediaDictionary = [[NSMutableDictionary alloc] init];
+
 
     [mediaDictionary setObject:[[defaults objectForKey:kVLCSettingStretchAudio] boolValue] ? kVLCSettingStretchAudioOnValue : kVLCSettingStretchAudioOffValue forKey:kVLCSettingStretchAudio];
     [mediaDictionary setObject:[defaults objectForKey:kVLCSettingTextEncoding] forKey:kVLCSettingTextEncoding];
@@ -480,7 +490,7 @@
     [self.repeatButtonLandscape setImage:[UIImage imageNamed:@"repeat"] forState:UIControlStateNormal];
 
     if (![self _isMediaSuitableForDevice]) {
-        UIAlertView * alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"DEVICE_TOOSLOW_TITLE", @"") message:[NSString stringWithFormat:NSLocalizedString(@"DEVICE_TOOSLOW", @""), [[UIDevice currentDevice] model], self.mediaItem.title] delegate:self cancelButtonTitle:NSLocalizedString(@"BUTTON_CANCEL", @"") otherButtonTitles:NSLocalizedString(@"BUTTON_OPEN", @""), nil];
+        UIAlertView * alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"DEVICE_TOOSLOW_TITLE", @"") message:[NSString stringWithFormat:NSLocalizedString(@"DEVICE_TOOSLOW", @""), [[UIDevice currentDevice] model], self.fileFromMediaLibrary.title] delegate:self cancelButtonTitle:NSLocalizedString(@"BUTTON_CANCEL", @"") otherButtonTitles:NSLocalizedString(@"BUTTON_OPEN", @""), nil];
         [alert show];
     } else
         [self _playNewMedia];
@@ -491,10 +501,10 @@
 
 - (BOOL)_isMediaSuitableForDevice
 {
-    if (!self.mediaItem)
+    if (!self.fileFromMediaLibrary)
         return YES;
 
-    NSUInteger totalNumberOfPixels = [[[self.mediaItem videoTrack] valueForKey:@"width"] doubleValue] * [[[self.mediaItem videoTrack] valueForKey:@"height"] doubleValue];
+    NSUInteger totalNumberOfPixels = [[[self.fileFromMediaLibrary videoTrack] valueForKey:@"width"] doubleValue] * [[[self.fileFromMediaLibrary videoTrack] valueForKey:@"height"] doubleValue];
 
     NSInteger speedCategory = [[UIDevice currentDevice] speedCategory];
 
@@ -526,16 +536,26 @@
 {
     NSNumber *playbackPositionInTime = @(0);
     CGFloat lastPosition = .0;
-    NSInteger duration = self.mediaItem.duration.intValue;
+    NSInteger duration = 0;
+    MLFile *matchedFile;
 
-    if (self.mediaItem.lastPosition)
-        lastPosition = self.mediaItem.lastPosition.floatValue;
+    if (self.fileFromMediaLibrary)
+        matchedFile = self.fileFromMediaLibrary;
+    else if (self.mediaList) {
+        NSArray *matches = [MLFile fileForURL:[[[self.mediaList mediaAtIndex:self.itemInMediaListToBePlayedFirst] url] absoluteString]];
+        if (matches.count > 0) {
+            matchedFile = matches[0];
+            lastPosition = matchedFile.lastPosition.floatValue;
+        }
+    }
+    if (matchedFile.lastPosition)
+        lastPosition = matchedFile.lastPosition.floatValue;
+    duration = matchedFile.duration.intValue;
     if (lastPosition < .95) {
         if (duration != 0)
             playbackPositionInTime = @(lastPosition * (duration / 1000.));
     }
     if (playbackPositionInTime.intValue > 0 && (duration * lastPosition - duration) < -60000) {
-        /* start time is not supported for media lists */
         [_mediaPlayer.media addOptions:@{@"start-time": playbackPositionInTime}];
         APLog(@"set starttime to %i", playbackPositionInTime.intValue);
     }
@@ -548,11 +568,11 @@
     else
         [_listPlayer playMedia:_listPlayer.rootMedia];
 
-    if (self.mediaItem) {
-        if (self.mediaItem.lastAudioTrack.intValue > 0)
-            _mediaPlayer.currentAudioTrackIndex = self.mediaItem.lastAudioTrack.intValue;
-        if (self.mediaItem.lastSubtitleTrack.intValue > 0)
-            _mediaPlayer.currentVideoSubTitleIndex = self.mediaItem.lastSubtitleTrack.intValue;
+    if (matchedFile) {
+        if (matchedFile.lastAudioTrack.intValue > 0)
+            _mediaPlayer.currentAudioTrackIndex = matchedFile.lastAudioTrack.intValue;
+        if (matchedFile.lastSubtitleTrack.intValue > 0)
+            _mediaPlayer.currentVideoSubTitleIndex = matchedFile.lastSubtitleTrack.intValue;
     }
 
     self.playbackSpeedSlider.value = [self _playbackSpeed];
@@ -612,8 +632,8 @@
         if (_listPlayer)
             _listPlayer = nil;
     }
-    if (_mediaItem)
-        _mediaItem = nil;
+    if (_fileFromMediaLibrary)
+        _fileFromMediaLibrary = nil;
     if (_mediaList)
         _mediaList = nil;
     if (_url)
@@ -624,15 +644,23 @@
 
 - (void)_saveCurrentState
 {
-    if (self.mediaItem) {
+    if (self.fileFromMediaLibrary) {
         @try {
-            MLFile *item = self.mediaItem;
+            MLFile *item = self.fileFromMediaLibrary;
             item.lastPosition = @([_mediaPlayer position]);
             item.lastAudioTrack = @(_mediaPlayer.currentAudioTrackIndex);
             item.lastSubtitleTrack = @(_mediaPlayer.currentVideoSubTitleIndex);
         }
         @catch (NSException *exception) {
             APLog(@"failed to save current media state - file removed?");
+        }
+    } else {
+        NSArray *files = [MLFile fileForURL:[[_mediaPlayer.media url] absoluteString]];
+        if (files.count > 0) {
+            MLFile *fileFromList = files[0];
+            fileFromList.lastPosition = @([_mediaPlayer position]);
+            fileFromList.lastAudioTrack = @(_mediaPlayer.currentAudioTrackIndex);
+            fileFromList.lastSubtitleTrack = @(_mediaPlayer.currentVideoSubTitleIndex);
         }
     }
 }
@@ -862,7 +890,7 @@
      * wouldn't see the I-frames when seeking on current mobile devices. This isn't a problem
      * within the Simulator, but especially on older ARMv7 devices, it's clearly noticeable. */
     [self performSelector:@selector(_setPositionForReal) withObject:nil afterDelay:0.3];
-    VLCTime *newPosition = [VLCTime timeWithInt:(int)(_positionSlider.value * self.mediaItem.duration.intValue)];
+    VLCTime *newPosition = [VLCTime timeWithInt:(int)(_positionSlider.value * self.fileFromMediaLibrary.duration.intValue)];
     [self.timeDisplay setTitle:newPosition.stringValue forState:UIControlStateNormal];
     self.timeDisplay.accessibilityLabel = [NSString stringWithFormat:@"%@: %@", NSLocalizedString(@"PLAYBACK_POSITION", @""), newPosition.stringValue];
     _positionSet = NO;
@@ -943,7 +971,8 @@
     }
 
     if ((currentState == VLCMediaPlayerStateEnded || currentState == VLCMediaPlayerStateStopped) && _listPlayer.repeatMode == VLCDoNotRepeat) {
-        if ([_listPlayer.mediaList indexOfMedia:_mediaPlayer.media] == _listPlayer.mediaList.count - 1)[self performSelector:@selector(closePlayback:) withObject:nil afterDelay:2.];
+        if ([_listPlayer.mediaList indexOfMedia:_mediaPlayer.media] == _listPlayer.mediaList.count - 1)
+            [self performSelector:@selector(closePlayback:) withObject:nil afterDelay:2.];
     }
 
     UIImage *playPauseImage = [_mediaPlayer isPlaying]? [UIImage imageNamed:@"pauseIcon"] : [UIImage imageNamed:@"playIcon"];
@@ -1350,6 +1379,15 @@
     }
 }
 
+- (void)audioSessionRouteChange:(NSNotification *)notification
+{
+    NSArray *outputs = [[AVAudioSession sharedInstance] currentRoute].outputs;
+    NSString *portName = [[outputs objectAtIndex:0] portName];
+
+    if (![portName isEqualToString:@"Headphones"])
+        [_listPlayer pause];
+}
+
 - (void)mediaDidFinishParsing:(VLCMedia *)aMedia
 {
     [self _updateDisplayedMetadata];
@@ -1362,11 +1400,18 @@
 
 - (void)_updateDisplayedMetadata
 {
-    MLFile *item = self.mediaItem;
+    MLFile *item;
     NSString *title;
     NSString *artist;
     NSString *albumName;
     NSString *trackNumber;
+    if (self.fileFromMediaLibrary)
+        item = self.fileFromMediaLibrary;
+    else if (self.mediaList) {
+        NSArray *matches = [MLFile fileForURL:[_mediaPlayer.media.url absoluteString]];
+        if (matches.count > 0)
+            item = matches[0];
+    }
 
     if (item) {
         if (item.isAlbumTrack) {
